@@ -1,6 +1,6 @@
 """BlendedR: VR controls for Blender."""
 
-from . import spacedrag
+from . import navigation
 
 bl_info = {
     "name": "BlendedR",
@@ -15,9 +15,9 @@ bl_info = {
 
 def register():
     """Register addon components with Blender."""
-    spacedrag.register()
+    navigation.register()
 
 
 def unregister():
     """Unregister addon components with Blender."""
-    spacedrag.unregister()
+    navigation.unregister()
