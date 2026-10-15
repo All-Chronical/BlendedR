@@ -1,9 +1,9 @@
-"""Grip-based navigation (Spacedrag and Zoom) for Blender's OpenXR session."""
+"""Grip-based navigation (Orbit, Spacedrag, and Zoom) for OpenXR."""
 
 import bpy
 from bpy.app.handlers import persistent
 from bpy.props import BoolProperty, FloatProperty
-from mathutils import Vector
+from mathutils import Quaternion, Vector
 
 ACTION_MAP_NAME = "blendedr_navigation"
 POSE_ACTION_NAME = "blendedr_controller_grip_pose"
@@ -42,20 +42,14 @@ def _add_pose_action(action_map, name, component_path, is_grip, is_aim):
         binding.component_paths.new(component_path)
 
 
-def _add_grab_action(action_map, preferences):
+def _add_grab_action(action_map):
     action = action_map.actionmap_items.new(GRAB_ACTION_NAME, True)
     action.type = "FLOAT"
     action.user_paths.new(LEFT_HAND_PATH)
     action.user_paths.new(RIGHT_HAND_PATH)
-    action.op = (
-        "wm.xr_navigation_grab"
-        if preferences.spacedrag_sensitivity == 1.0 and preferences.zoom_sensitivity == 1.0
-        else "blendedr.navigation_grab"
-    )
+    action.op = "blendedr.navigation_grab"
     action.op_mode = "MODAL"
     action.bimanual = True
-    if action.op == "wm.xr_navigation_grab":
-        action.op_properties.lock_rotation = True
 
     for binding_name, profile, component_path in CONTROLLER_PROFILES:
         binding = action.bindings.new(binding_name, True)
@@ -98,6 +92,10 @@ class BLENDEDR_OT_navigation_grab(bpy.types.Operator):
                 navigation.navigation_scale *= scale_factor
             self.previous_location = current_location
             self.previous_location_other = current_location_other
+        elif event.xr.user_path == LEFT_HAND_PATH:
+            delta = current_location - self.previous_location
+            self._orbit(context, navigation, delta, preferences.spacedrag_sensitivity)
+            self.previous_location = current_location
         elif event.xr.user_path == RIGHT_HAND_PATH:
             delta = current_location - self.previous_location
             navigation.navigation_location = (
@@ -110,6 +108,31 @@ class BLENDEDR_OT_navigation_grab(bpy.types.Operator):
             return {"FINISHED"}
         return {"RUNNING_MODAL"}
 
+    @staticmethod
+    def _orbit(context, navigation, hand_delta, sensitivity):
+        viewer_rotation = Quaternion(navigation.viewer_pose_rotation)
+        camera_right = viewer_rotation @ Vector((1.0, 0.0, 0.0))
+        camera_up = viewer_rotation @ Vector((0.0, 1.0, 0.0))
+        horizontal = hand_delta.dot(camera_right)
+        vertical = hand_delta.dot(camera_up)
+
+        orbit_rotation = (
+            Quaternion(camera_up, -horizontal * sensitivity)
+            @ Quaternion(camera_right, -vertical * sensitivity)
+        )
+        pivot = Vector(context.space_data.region_3d.view_location)
+        viewer_location = Vector(navigation.viewer_pose_location)
+        rotated_viewer_location = pivot + orbit_rotation @ (viewer_location - pivot)
+
+        navigation.navigation_location = (
+            Vector(navigation.navigation_location)
+            + rotated_viewer_location
+            - viewer_location
+        )
+        navigation.navigation_rotation = (
+            orbit_rotation @ Quaternion(navigation.navigation_rotation)
+        )
+
 
 class BLENDEDR_AddonPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
@@ -121,7 +144,7 @@ class BLENDEDR_AddonPreferences(bpy.types.AddonPreferences):
     )
     spacedrag_sensitivity: FloatProperty(
         name="Drag Amount",
-        description="Scale the controller movement used for Spacedrag",
+        description="Scale the controller movement used for Orbit and Spacedrag",
         default=1.0,
         min=1.0,
         max=20.0,
@@ -194,7 +217,7 @@ def create_navigation_actions(context):
         is_grip=False,
         is_aim=True,
     )
-    _add_grab_action(action_map, preferences)
+    _add_grab_action(action_map)
 
     if not session_state.action_set_create(context, action_map):
         return
