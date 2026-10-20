@@ -27,6 +27,7 @@
 
 #  include "BKE_context.hh"
 #  include "BKE_main.hh"
+#  include "BKE_report.hh"
 
 #  include "WM_api.hh"
 
@@ -737,6 +738,20 @@ static bool rna_XrSessionState_is_running(bContext *C)
 #  endif
 }
 
+static const char *rna_XrSessionState_mouse_event_status(bContext *C)
+{
+#  ifdef WITH_XR_OPENXR
+  const wmWindowManager *wm = CTX_wm_manager(C);
+  if (wm == nullptr) {
+    return "no window manager in the Python context";
+  }
+  return WM_xr_session_exists(&wm->xr) ? "XR session is started" : "XR session is not started";
+#  else
+  UNUSED_VARS(C);
+  return "Blender was built without OpenXR support";
+#  endif
+}
+
 static void rna_XrSessionState_reset_to_base_pose(bContext *C)
 {
 #  ifdef WITH_XR_OPENXR
@@ -877,6 +892,54 @@ bool rna_XrSessionState_controller_pose_actions_set(bContext *C,
       &wm->xr, action_set_name, grip_action_name, aim_action_name);
 #  else
   UNUSED_VARS(C, action_set_name, grip_action_name, aim_action_name);
+  return false;
+#  endif
+}
+
+static bool rna_XrSessionState_mouse_event_add(ReportList *reports,
+                                               bContext *C,
+                                               int type,
+                                               int value,
+                                               int x,
+                                               int y,
+                                               bool shift,
+                                               bool ctrl,
+                                               bool alt)
+{
+#  ifdef WITH_XR_OPENXR
+  if (!ELEM(type, MOUSEMOVE, MIDDLEMOUSE) ||
+      (type == MOUSEMOVE && value != KM_NOTHING) ||
+      (type == MIDDLEMOUSE && !ELEM(value, KM_PRESS, KM_RELEASE)))
+  {
+    BKE_report(reports, RPT_ERROR, "Unsupported XR mouse event");
+    return false;
+  }
+
+  wmEvent event{};
+  event.type = wmEventType(type);
+  event.val = value;
+  event.xy[0] = x;
+  event.xy[1] = y;
+  if (shift) {
+    event.modifier |= KM_SHIFT;
+  }
+  if (ctrl) {
+    event.modifier |= KM_CTRL;
+  }
+  if (alt) {
+    event.modifier |= KM_ALT;
+  }
+  WM_event_tablet_data_default_set(&event.tablet);
+
+  wmWindowManager *wm = CTX_wm_manager(C);
+  const char *error = nullptr;
+  if (!WM_xr_session_mouse_event_add(&wm->xr, wm, &event, &error)) {
+    BKE_report(reports, RPT_ERROR, error);
+    return false;
+  }
+  return true;
+#  else
+  UNUSED_VARS(C, reports, type, value, x, y, shift, ctrl, alt);
   return false;
 #  endif
 }
@@ -1659,6 +1722,11 @@ namespace blender {
 /* -------------------------------------------------------------------- */
 
 static const EnumPropertyItem rna_enum_xr_action_types[] = {
+    {XR_BOOLEAN_INPUT,
+     "BOOLEAN",
+     0,
+     "Boolean",
+     "Digital button action"},
     {XR_FLOAT_INPUT,
      "FLOAT",
      0,
@@ -2485,6 +2553,17 @@ static void rna_def_xr_session_state(BlenderRNA *brna)
   parm = RNA_def_boolean(func, "result", false, "Result", "");
   RNA_def_function_return(func, parm);
 
+  func = RNA_def_function(
+      srna, "mouse_event_status", "rna_XrSessionState_mouse_event_status");
+  RNA_def_function_ui_description(
+      func, "Report whether XR mouse events can be queued from this Python context");
+  RNA_def_function_flag(func, FUNC_NO_SELF);
+  parm = RNA_def_pointer(func, "context", "Context", "", "");
+  RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
+  parm = RNA_def_string(func, "result", nullptr, 128, "Status", "XR mouse event queue status");
+  RNA_def_parameter_clear_flags(parm, PROP_NEVER_NULL, ParameterFlag(0));
+  RNA_def_function_return(func, parm);
+
   func = RNA_def_function(srna, "reset_to_base_pose", "rna_XrSessionState_reset_to_base_pose");
   RNA_def_function_ui_description(func, "Force resetting of position and rotation deltas");
   RNA_def_function_flag(func, FUNC_NO_SELF);
@@ -2562,6 +2641,28 @@ static void rna_def_xr_session_state(BlenderRNA *brna)
                         "Name of the action representing the controller aims");
   RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
   parm = RNA_def_boolean(func, "result", false, "Result", "");
+  RNA_def_function_return(func, parm);
+
+  func = RNA_def_function(srna, "mouse_event_add", "rna_XrSessionState_mouse_event_add");
+  RNA_def_function_flag(func, FUNC_USE_REPORTS);
+  RNA_def_function_ui_description(
+      func,
+      "Queue MOUSEMOVE or MIDDLEMOUSE input for the XR session's offscreen 3D viewport");
+  RNA_def_function_flag(func, FUNC_NO_SELF);
+  parm = RNA_def_pointer(func, "context", "Context", "", "");
+  RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
+  parm = RNA_def_enum(
+      func, "type", rna_enum_event_type_items, 0, "Type", "MOUSEMOVE or MIDDLEMOUSE");
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  parm = RNA_def_enum(
+      func, "value", rna_enum_event_value_items, 0, "Value", "Input event value");
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  RNA_def_int(func, "x", 0, INT_MIN, INT_MAX, "X", "Virtual pointer X coordinate", INT_MIN, INT_MAX);
+  RNA_def_int(func, "y", 0, INT_MIN, INT_MAX, "Y", "Virtual pointer Y coordinate", INT_MIN, INT_MAX);
+  RNA_def_boolean(func, "shift", false, "Shift", "Apply the Shift modifier");
+  RNA_def_boolean(func, "ctrl", false, "Ctrl", "Apply the Ctrl modifier");
+  RNA_def_boolean(func, "alt", false, "Alt", "Apply the Alt modifier");
+  parm = RNA_def_boolean(func, "result", false, "Result", "Whether the event was queued");
   RNA_def_function_return(func, parm);
 
   func = RNA_def_function(srna, "action_state_get", "rna_XrSessionState_action_state_get");
