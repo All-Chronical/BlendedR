@@ -23,6 +23,8 @@ enum {
   EVT_DATA_DRAGDROP = 3,
   EVT_DATA_NDOF_MOTION = 4,
   EVT_DATA_XR = 5,
+  /** Mouse event targeted at the XR offscreen viewport. */
+  EVT_DATA_XR_MOUSE = 6,
 };
 
 /**

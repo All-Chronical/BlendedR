@@ -485,6 +485,41 @@ bContext *WM_xr_session_context_get(const wmXrData *xr)
   return xr->runtime ? xr->runtime->b_context : nullptr;
 }
 
+bool WM_xr_session_mouse_event_add(wmXrData *xr,
+                                   const wmWindowManager *wm,
+                                   const wmEvent *event,
+                                   const char **r_error)
+{
+  BLI_assert(r_error);
+  *r_error = nullptr;
+
+  if (xr->runtime == nullptr || xr->runtime->ghost_context == nullptr) {
+    *r_error = "XR runtime is unavailable";
+    return false;
+  }
+  if (!ELEM(event->type, MOUSEMOVE, MIDDLEMOUSE)) {
+    *r_error = "only MOUSEMOVE and MIDDLEMOUSE events are supported";
+    return false;
+  }
+  if (event->type == MOUSEMOVE && event->val != KM_NOTHING) {
+    *r_error = "MOUSEMOVE events must use the NOTHING value";
+    return false;
+  }
+  if (event->type == MIDDLEMOUSE && !ELEM(event->val, KM_PRESS, KM_RELEASE)) {
+    *r_error = "MIDDLEMOUSE events must use PRESS or RELEASE";
+    return false;
+  }
+
+  wmWindow *xr_win = wm_xr_session_root_window_or_fallback_get(wm, xr->runtime);
+  if (xr_win == nullptr) {
+    *r_error = "XR session has no root window";
+    return false;
+  }
+
+  wm_event_add_xr_mouse(xr_win, event);
+  return true;
+}
+
 bool WM_xr_session_state_viewer_pose_location_get(const wmXrData *xr, float r_location[3])
 {
   if (!WM_xr_session_is_ready(xr) || !xr->runtime->session_state.is_view_data_set) {

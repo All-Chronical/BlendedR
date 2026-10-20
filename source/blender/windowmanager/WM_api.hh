@@ -2288,6 +2288,12 @@ wmXrViewfinderState *WM_xr_session_state_viewfinder_handle_get(const wmXrData *x
 bContext *WM_xr_session_context_get(const wmXrData *xr);
 bContext *WM_xr_session_context_ensure(wmXrData *xr, const wmWindowManager *wm);
 
+/** Queue a mouse event for handling in the XR offscreen viewport. */
+bool WM_xr_session_mouse_event_add(wmXrData *xr,
+                                   const wmWindowManager *wm,
+                                   const wmEvent *event,
+                                   const char **r_error);
+
 void WM_xr_session_base_pose_reset(wmXrData *xr);
 void WM_xr_session_state_navigation_reset(wmXrSessionState *state);
 void WM_xr_session_state_viewfinder_reset(wmXrSessionState *state);

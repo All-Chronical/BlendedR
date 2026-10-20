@@ -4040,6 +4040,10 @@ static void wm_event_free_and_remove_from_queue_if_valid(wmEvent *event)
  * \{ */
 
 #ifdef WITH_XR_OPENXR
+struct wmXrMouseEventData {
+  wmEvent event;
+};
+
 /**
  * Special handling for XR events.
  *
@@ -4061,11 +4065,21 @@ static bool wm_event_xr_handler_matches_actiondata(const wmEventHandler_Op *op_h
   return (handler_op_type_match && handler_op_properties_match);
 }
 
+static void wm_event_handle_xr_mouse_event(wmWindowManager *wm,
+                                           wmWindow *win,
+                                           wmEvent *event,
+                                           bContext *main_context);
+
 static void wm_event_handle_xrevent(wmWindowManager *wm,
                                     wmWindow *win,
                                     wmEvent *event,
                                     bContext *main_context)
 {
+  if (event->custom == EVT_DATA_XR_MOUSE) {
+    wm_event_handle_xr_mouse_event(wm, win, event, main_context);
+    return;
+  }
+
   bContext *xr_context = WM_xr_session_context_ensure(&wm->xr, wm);
 
   ScrArea *xr_area = CTX_wm_area(xr_context);
@@ -4213,6 +4227,77 @@ static eHandlerActionFlag wm_event_do_handlers_area_regions(bContext *C,
 
   return wm_event_do_region_handlers(C, event, region_hovered);
 }
+
+#ifdef WITH_XR_OPENXR
+/** Handle a mouse event queued for the XR-only offscreen viewport. */
+static void wm_event_handle_xr_mouse_event(wmWindowManager *wm,
+                                           wmWindow *win,
+                                           wmEvent *event,
+                                           bContext *main_context)
+{
+  BLI_assert(event->custom == EVT_DATA_XR_MOUSE);
+  BLI_assert(event->customdata);
+
+  wmXrMouseEventData *inputdata = static_cast<wmXrMouseEventData *>(event->customdata);
+  wmEvent *input_event = &inputdata->event;
+  bContext *xr_context = WM_xr_session_context_ensure(&wm->xr, wm);
+  ScrArea *xr_area = CTX_wm_area(xr_context);
+  ARegion *xr_region = CTX_wm_region(xr_context);
+
+  BLI_assert(xr_area && xr_area->spacetype == SPACE_VIEW3D && xr_region);
+
+  const uint xr_ctx_scene_uid = CTX_data_scene(xr_context)->id.session_uid;
+  const uint main_ctx_scene_uid = CTX_data_scene(main_context)->id.session_uid;
+  const bool ctx_xr_main_scene_match = (xr_ctx_scene_uid == main_ctx_scene_uid);
+
+  CTX_wm_area_set(xr_context, xr_area);
+  CTX_wm_region_set(xr_context, xr_region);
+  wm_region_mouse_co(xr_context, input_event);
+
+  /* The mouse event can continue an XR navigation modal operator. Limit dispatch to operator
+   * handlers that originated in the XR offscreen area so desktop modal/UI handlers do not receive
+   * XR input. */
+  eHandlerActionFlag action = WM_HANDLER_CONTINUE;
+  for (wmEventHandler &handler_base : win->runtime->modalhandlers) {
+    if (handler_base.type != WM_HANDLER_TYPE_OP) {
+      continue;
+    }
+
+    BLI_assert((handler_base.flag & WM_HANDLER_DO_FREE) == 0);
+    wmEventHandler_Op *op_handler = reinterpret_cast<wmEventHandler_Op *>(&handler_base);
+    if (op_handler->context.area != xr_area) {
+      continue;
+    }
+    if (handler_base.poll != nullptr &&
+        !handler_base.poll(win, xr_area, xr_region, input_event))
+    {
+      continue;
+    }
+
+    action = wm_handler_operator_call(
+        xr_context, &win->runtime->modalhandlers, &handler_base, input_event, nullptr, nullptr);
+    if (action & WM_HANDLER_BREAK) {
+      break;
+    }
+  }
+
+  if ((action & WM_HANDLER_BREAK) == 0) {
+    action |= wm_event_do_region_handlers(xr_context, input_event, xr_region);
+  }
+  if ((action & WM_HANDLER_BREAK) == 0) {
+    CTX_wm_region_set(xr_context, nullptr);
+    wm_region_mouse_co(xr_context, input_event);
+    action |= wm_handlers_do(
+        xr_context, input_event, static_cast<ListBaseT<wmEventHandler> *>(&xr_area->handlers));
+  }
+  wm_event_handler_return_value_check(xr_context, input_event, action);
+
+  CTX_data_main_set(main_context, CTX_data_main(xr_context));
+  if (ctx_xr_main_scene_match) {
+    CTX_data_scene_set(main_context, CTX_data_scene(xr_context));
+  }
+}
+#endif
 
 void wm_event_do_handlers(bContext *C)
 {
@@ -6576,6 +6661,24 @@ void wm_event_add_xrevent(wmWindow *win, wmXrActionData *actiondata, short val)
   event.flag = (eWM_EventFlag)0;
   event.custom = EVT_DATA_XR;
   event.customdata = actiondata;
+  event.customdata_free = true;
+
+  WM_event_add(win, &event);
+}
+
+void wm_event_add_xr_mouse(wmWindow *win, const wmEvent *event_to_add)
+{
+  wmXrMouseEventData *inputdata = MEM_new<wmXrMouseEventData>(__func__);
+  inputdata->event = *event_to_add;
+  inputdata->event.custom = 0;
+  inputdata->event.customdata = nullptr;
+  inputdata->event.customdata_free = false;
+
+  wmEvent event{};
+  event.type = EVT_XR_ACTION;
+  event.flag = (eWM_EventFlag)0;
+  event.custom = EVT_DATA_XR_MOUSE;
+  event.customdata = inputdata;
   event.customdata_free = true;
 
   WM_event_add(win, &event);
