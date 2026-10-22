@@ -1861,7 +1861,17 @@ void ED_view3d_draw_offscreen_simple(Depsgraph *depsgraph,
                                      GPUOffScreen *ofs,
                                      GPUViewport *viewport)
 {
-  View3D v3d = dna::shallow_zero_initialize();
+  /* BlendedR: XR scene parity. Default-construct #View3D so the DNA member defaults apply
+   * instead of a zeroed struct. `dna::shallow_zero_initialize()` memsets the whole struct,
+   * discarding the defaults of #View3DOverlay (edit-mesh faces pass, weight/vertex/texture
+   * paint overlay opacities, curve handle display) and other presentation members
+   * (grease-pencil edit lines, vertex opacity). The zeroed values disabled e.g. selected-face
+   * highlights and the weight-paint mesh overlay in XR. Clear the presentation bits that the
+   * `draw_flags` gates below are meant to control so they keep deciding them. */
+  View3D v3d = View3D();
+  v3d.flag &= ~eView3D_Flag(V3D_SELECT_OUTLINE);  /* Set by #V3D_OFSDRAW_SHOW_SELECTION. */
+  v3d.flag2 &= ~eView3D_Flag2(V3D_SHOW_ANNOTATION); /* Set by #V3D_OFSDRAW_SHOW_ANNOTATION. */
+  v3d.gridflag = eView3D_GridFlag(0);     /* Set by #V3D_OFSDRAW_SHOW_GRIDFLOOR. */
   ARegion region = {nullptr};
   bke::ARegionRuntime region_runtime{};
   region.runtime = &region_runtime;
@@ -1910,16 +1920,27 @@ void ED_view3d_draw_offscreen_simple(Depsgraph *depsgraph,
     if (draw_flags & V3D_OFSDRAW_XR_SHOW_PASSTHROUGH) {
       v3d.flag2 |= V3D_XR_SHOW_PASSTHROUGH;
     }
-    /* Disable other overlays (set all available _HIDE_ flags). */
-    v3d.overlay.flag |= V3D_OVERLAY_HIDE_CURSOR | V3D_OVERLAY_HIDE_TEXT |
-                        V3D_OVERLAY_HIDE_MOTION_PATHS | V3D_OVERLAY_HIDE_OBJECT_ORIGINS;
+    /* Disable other overlays (set all available _HIDE_ flags), unless explicitly requested
+     * (BlendedR: XR scene parity). */
+    if ((draw_flags & V3D_OFSDRAW_SHOW_3D_CURSOR) == 0) {
+      v3d.overlay.flag |= V3D_OVERLAY_HIDE_CURSOR;
+    }
+    if ((draw_flags & V3D_OFSDRAW_SHOW_OBJECT_ORIGINS) == 0) {
+      v3d.overlay.flag |= V3D_OVERLAY_HIDE_OBJECT_ORIGINS;
+    }
+    if ((draw_flags & V3D_OFSDRAW_SHOW_MOTION_PATHS) == 0) {
+      v3d.overlay.flag |= V3D_OVERLAY_HIDE_MOTION_PATHS;
+    }
+    v3d.overlay.flag |= V3D_OVERLAY_HIDE_TEXT;
+    if ((draw_flags & V3D_OFSDRAW_SHOW_RELATIONSHIP_LINES) == 0) {
+      v3d.flag |= V3D_HIDE_HELPLINES;
+    }
     if ((draw_flags & V3D_OFSDRAW_SHOW_OBJECT_EXTRAS) == 0) {
       v3d.overlay.flag |= V3D_OVERLAY_HIDE_OBJECT_XTRAS;
     }
     if ((object_type_exclude_viewport_override & (1 << OB_ARMATURE)) != 0) {
       v3d.overlay.flag |= V3D_OVERLAY_HIDE_BONES;
     }
-    v3d.flag |= V3D_HIDE_HELPLINES;
   }
 
   if (is_xr_surface) {

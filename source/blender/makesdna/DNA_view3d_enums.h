@@ -26,6 +26,12 @@ enum eV3DOffscreenDrawFlag : int {
   /* By default, the viewport background is set to use the world.
    * In some specific case, we want to use the actual setting from the viewport or scene data. */
   V3D_OFSDRAW_NO_WORLD_BACKGROUND_OVERRIDE = (1 << 8),
+  /* BlendedR: scene-parity overlays for XR offscreen drawing. Bits 9 and above do not fit in
+   * #XrSessionSettings.draw_flags (char) and are stored in draw_flags_extra at (bit - 8). */
+  V3D_OFSDRAW_SHOW_3D_CURSOR = (1 << 9),
+  V3D_OFSDRAW_SHOW_OBJECT_ORIGINS = (1 << 10),
+  V3D_OFSDRAW_SHOW_MOTION_PATHS = (1 << 11),
+  V3D_OFSDRAW_SHOW_RELATIONSHIP_LINES = (1 << 12),
 };
 ENUM_OPERATORS(eV3DOffscreenDrawFlag)
 

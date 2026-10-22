@@ -146,7 +146,10 @@ struct XrSessionSettings {
   char viewfinder_enabled = 0;
   char viewfinder_crosshair_enabled = 0;
   char viewfinder_hand = 0; /* #eXrViewfinderHand */
-  char _pad2[3];
+  /** BlendedR: View3D draw flags at bit 8 and above (V3D_OFSDRAW_SHOW_3D_CURSOR, ...), stored
+   * at (bit - 8). Merged into the draw flags by the XR draw path. */
+  char draw_flags_extra = 0;
+  char _pad2[2];
 
   float viewfinder_scale = 1.0f;
   float viewfinder_passepartout_overscan = 0.5f;

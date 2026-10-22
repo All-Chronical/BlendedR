@@ -398,7 +398,8 @@ void wm_xr_viewfinder_render_view(wmXrData *xr_data)
   copy_m4_m4(viewfinder_winmat, cam_render_params.winmat);
 
   /* Set viewfinder View3D draw flags, using base XR draw flags with some overriden exceptions. */
-  int viewfinder_draw_flags = V3D_OFSDRAW_OVERRIDE_SCENE_SETTINGS | settings->draw_flags;
+  int viewfinder_draw_flags = V3D_OFSDRAW_OVERRIDE_SCENE_SETTINGS | settings->draw_flags |
+                             (int(settings->draw_flags_extra) << 8); /* BlendedR extra flags. */
   viewfinder_draw_flags &= ~V3D_OFSDRAW_SHOW_SELECTION;      /* Always hide selection outlines. */
   viewfinder_draw_flags &= ~V3D_OFSDRAW_XR_SHOW_CONTROLLERS; /* Always hide other XR controller. */
   viewfinder_draw_flags &= ~V3D_OFSDRAW_XR_SHOW_CUSTOM_OVERLAYS; /* Always hide XR overlays. */
