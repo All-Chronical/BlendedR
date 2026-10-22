@@ -2416,6 +2416,32 @@ static void rna_def_xr_session_settings(BlenderRNA *brna)
       prop, "Show Object Extras", "Show object extras, including empties, lights, and cameras");
   RNA_def_property_update(prop, NC_WM | ND_XR_DATA_CHANGED, nullptr);
 
+  /* BlendedR: scene-parity overlays. Stored in draw_flags_extra at (bit - 8). */
+  prop = RNA_def_property(srna, "show_cursor", PROP_BOOLEAN, PROP_NONE);
+  RNA_def_property_boolean_sdna(prop, nullptr, "draw_flags_extra", V3D_OFSDRAW_SHOW_3D_CURSOR >> 8);
+  RNA_def_property_ui_text(prop, "Show 3D Cursor", "Show the 3D cursor in the XR view");
+  RNA_def_property_update(prop, NC_WM | ND_XR_DATA_CHANGED, nullptr);
+
+  prop = RNA_def_property(srna, "show_object_origins", PROP_BOOLEAN, PROP_NONE);
+  RNA_def_property_boolean_sdna(
+      prop, nullptr, "draw_flags_extra", V3D_OFSDRAW_SHOW_OBJECT_ORIGINS >> 8);
+  RNA_def_property_ui_text(prop, "Show Object Origins", "Show object center dots in the XR view");
+  RNA_def_property_update(prop, NC_WM | ND_XR_DATA_CHANGED, nullptr);
+
+  prop = RNA_def_property(srna, "show_motion_paths", PROP_BOOLEAN, PROP_NONE);
+  RNA_def_property_boolean_sdna(prop, nullptr, "draw_flags_extra", V3D_OFSDRAW_SHOW_MOTION_PATHS >> 8);
+  RNA_def_property_ui_text(prop, "Show Motion Paths", "Show motion paths in the XR view");
+  RNA_def_property_update(prop, NC_WM | ND_XR_DATA_CHANGED, nullptr);
+
+  prop = RNA_def_property(srna, "show_relationship_lines", PROP_BOOLEAN, PROP_NONE);
+  RNA_def_property_boolean_sdna(
+      prop, nullptr, "draw_flags_extra", V3D_OFSDRAW_SHOW_RELATIONSHIP_LINES >> 8);
+  RNA_def_property_ui_text(
+      prop,
+      "Show Relationship Lines",
+      "Show parent and constraint relationship lines in the XR view");
+  RNA_def_property_update(prop, NC_WM | ND_XR_DATA_CHANGED, nullptr);
+
   prop = RNA_def_property(srna, "controller_draw_style", PROP_ENUM, PROP_NONE);
   RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
   RNA_def_property_enum_items(prop, controller_draw_styles);

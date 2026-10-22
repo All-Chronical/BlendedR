@@ -152,7 +152,10 @@ void wm_xr_draw_view(const GHOST_XrDrawViewInfo *draw_view, void *customdata)
   wmXrSessionState *session_state = &xr_data->runtime->session_state;
   XrSessionSettings *settings = &xr_data->session_settings;
 
-  const int display_flags = V3D_OFSDRAW_OVERRIDE_SCENE_SETTINGS | settings->draw_flags;
+  /* BlendedR: draw_flags (char) holds flags up to bit 7; flags at bit 8 and above live in
+   * draw_flags_extra at (bit - 8). */
+  const int display_flags = V3D_OFSDRAW_OVERRIDE_SCENE_SETTINGS | settings->draw_flags |
+                            (int(settings->draw_flags_extra) << 8);
 
   float viewmat[4][4], winmat[4][4];
 
