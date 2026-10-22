@@ -77,25 +77,43 @@ def _sync_host_view_presentation():
     runtime.debug_state["host_view"] = f"{window.as_pointer():x}:{area.as_pointer():x}"
 
 
-def _right_aim_angles(session):
-    """Return the right-controller aim as screen angles in the viewer (head) frame.
+def _base_pose_rotation():
+    """Return the orientation of Blender's XR base pose in world space."""
+    settings = bpy.context.window_manager.xr_session_settings
+    if settings.base_pose_type == "CUSTOM":
+        base_yaw = settings.base_pose_angle
+    else:
+        base_object = (
+            settings.base_pose_object
+            if settings.base_pose_type == "OBJECT"
+            else bpy.context.scene.camera
+        )
+        base_yaw = (
+            base_object.matrix_world.to_quaternion().to_euler().z if base_object else 0.0
+        )
+    return (
+        Matrix.Rotation(base_yaw, 4, "Z") @ Matrix.Rotation(pi / 2.0, 4, "X")
+    ).to_quaternion()
 
-    Desktop middle-mouse dragging is screen-relative: horizontal motion orbits and vertical
-    motion pitches regardless of how the view is oriented in the world. Measuring the aim in
-    the viewer frame reproduces that mapping in XR. The previous world-frame measurement
-    coupled and stretched the yaw/pitch split whenever the aim ray pointed steeply up/down or
-    the head was tilted, which was perceived as roll while orbiting.
 
-    Both poses are published with the same base and navigation transforms applied
-    (wm_xr_session_controller_pose_calc / wm_xr_session_state_update), so un-applying the
-    viewer rotation also removes navigation; no explicit navigation un-apply is needed.
+def _right_aim_angles(session, reference_rotation=None):
+    """Return controller aim angles relative to a reference that excludes the HMD.
+
+    Blender publishes controller aim in world space as navigation @ base @ raw_controller.
+    For orbit, reference_rotation is navigation @ base: its inverse removes those transforms
+    and leaves the controller orientation in the basket frame. The HMD pose is not part of this
+    calculation. If no reference is supplied, retain the viewer-relative measurement used by the
+    virtual pointer and the existing pan/zoom behavior.
     """
     world_rotation = Quaternion(session.controller_aim_rotation_get(bpy.context, 1))
-    viewer_rotation = Quaternion(session.viewer_pose_rotation)
-    rotation = viewer_rotation.inverted() @ world_rotation
+    reference = (
+        Quaternion(session.viewer_pose_rotation)
+        if reference_rotation is None
+        else Quaternion(reference_rotation)
+    )
+    rotation = reference.inverted() @ world_rotation
     direction = rotation @ Vector((0.0, 0.0, -1.0))
     direction.normalize()
-    # Viewer frame: -Z forward, +X screen right, +Y screen up.
     return atan2(direction.x, -direction.z), asin(max(-1.0, min(1.0, direction.y)))
 
 
@@ -198,61 +216,36 @@ def _session_snapshot(session, prefix):
 
 def _apply_xr_navigation(session, yaw_delta, pitch_delta, preferences):
     if runtime.navigation_mode == "ORBIT":
-        # Orbit is applied as a camera-space rotation derived from the live viewer pose, not a
-        # world-frame closed form. The XR camera transform is viewer_pose = navigation * base *
-        # head, so a world-frame turntable (yaw about world Z, pitch about world X) sandwiches the
-        # head's yaw between the pitch axis and the camera: the camera-right axis lifts off the
-        # horizon by sin(head yaw) * sin(pitch), which is perceived as scene roll in the HMD.
-        # Desktop keeps the horizon because its pitch axis is the camera's own right axis,
-        # leveled to the horizon (view3d_navigate_view_rotate.cc / ndof horizon lock), not a
-        # world axis. Mirror that here.
-        chain = Quaternion(session.viewer_pose_rotation)
-        forward = chain @ Vector((0.0, 0.0, -1.0))
-        right = chain @ Vector((1.0, 0.0, 0.0))
-        up = chain @ Vector((0.0, 1.0, 0.0))
-
-        # Horizon leveling: rotate about the view axis until the world-up direction lies in the
-        # screen's vertical plane (camera up aligned with the projection of world Z). This is
-        # self-healing (removes roll inherited from older states) and a no-op while already level.
-        world_up_screen = Vector((0.0, 0.0, 1.0)) - forward * forward.z
-        level_angle = 0.0
-        if world_up_screen.length_squared > 1e-8:
-            world_up_screen.normalize()
-            level_angle = atan2((up.cross(world_up_screen)).dot(forward), up.dot(world_up_screen))
-            level = Quaternion(forward, level_angle)
-            right = level @ right
-            up = level @ up
-
-        # Pitch axis: the camera's right axis, which is horizontal after leveling (cross of the
-        # view axis with world Z up projected on screen is always horizontal).
-        pitch_axis = right.copy()
+        # The basket orientation is navigation @ base. Do not read viewer_pose_rotation here:
+        # that also includes the HMD observer, whose orientation must not steer orbit.
+        basket_rotation = (
+            Quaternion(session.navigation_rotation) @ _base_pose_rotation()
+        )
+        forward = basket_rotation @ Vector((0.0, 0.0, -1.0))
+        pitch_axis = forward.cross(Vector((0.0, 0.0, 1.0)))
         if pitch_axis.length_squared < 1e-8:
             pitch_axis = Vector((1.0, 0.0, 0.0))
-        pitch_axis.normalize()
+        else:
+            pitch_axis.normalize()
 
         yaw_angle = -yaw_delta * preferences.orbit_sensitivity
         pitch_angle = -pitch_delta * preferences.orbit_sensitivity
-        # Desktop turntable orbit cannot pitch through the poles. Clamp the resulting camera
-        # elevation before applying the pitch delta; otherwise repeated aim-drag can invert the
-        # viewer and make horizon leveling ambiguous near the pole.
+        # Keep the basket's view direction short of the vertical poles. Since pitch is applied
+        # around the horizontal basket-right axis, this clamp is independent of HMD orientation.
         forward_after_pitch = Matrix.Rotation(pitch_angle, 4, pitch_axis).to_3x3() @ forward
         current_elevation = asin(max(-1.0, min(1.0, forward.z)))
         next_elevation = asin(max(-1.0, min(1.0, forward_after_pitch.z)))
         elevation_limit = ORBIT_PITCH_LIMIT - 0.001
         if abs(next_elevation) > elevation_limit:
-            pitch_angle = (max(-elevation_limit, min(elevation_limit, next_elevation)) - current_elevation)
-        # Upside-down flip (desktop viewrotate "reverse"): inverted camera inverts the
-        # turntable yaw response.
-        if up.z < 0.0:
-            yaw_angle = -yaw_angle
+            pitch_angle = (
+                max(-elevation_limit, min(elevation_limit, next_elevation)) - current_elevation
+            )
 
-        # Camera delta: level, then pitch about the (already horizontal) camera right axis,
-        # then yaw about world Z. Applied to the camera chain, this keeps the camera right
-        # axis on the horizon by construction, for any head orientation.
+        # Yaw is about world up. Pitch is about the horizontal right axis of the basket view.
+        # No leveling feedback is needed: the HMD observer is excluded from these axes.
         delta = (
             Matrix.Rotation(yaw_angle, 4, "Z")
             @ Matrix.Rotation(pitch_angle, 4, pitch_axis)
-            @ Matrix.Rotation(level_angle, 4, forward)
         ).to_quaternion()
         session.navigation_rotation = delta @ Quaternion(session.navigation_rotation)
         # Exact orbit around the anchor: the navigation transform as a whole is rotated about
@@ -364,25 +357,31 @@ def _pointer_timer():
     aim_world_rotation = tuple(session.controller_aim_rotation_get(bpy.context, 1))
     aim_is_fresh = aim_world_rotation != runtime.pointer_previous_world_rotation
 
-    aim_angles = _right_aim_angles(session)
+    pointer_angles = _right_aim_angles(session)
+    requested_mode = _navigation_mode_from_modifiers()
+    if requested_mode == "ORBIT":
+        basket_rotation = Quaternion(session.navigation_rotation) @ _base_pose_rotation()
+        navigation_angles = _right_aim_angles(session, basket_rotation)
+    else:
+        navigation_angles = pointer_angles
+
     if aim_is_fresh:
         if runtime.pointer_previous_angles is not None:
-            pointer_delta = _angles_delta(runtime.pointer_previous_angles, aim_angles)
+            pointer_delta = _angles_delta(runtime.pointer_previous_angles, pointer_angles)
             if pointer_delta is not None:
                 yaw_delta, pitch_delta = pointer_delta
                 runtime.pointer_position[0] += yaw_delta * POINTER_PIXELS_PER_RADIAN
                 runtime.pointer_position[1] += pitch_delta * POINTER_PIXELS_PER_RADIAN
-        runtime.pointer_previous_angles = aim_angles
+        runtime.pointer_previous_angles = pointer_angles
         runtime.pointer_previous_world_rotation = aim_world_rotation
 
     desired = "MIDDLEMOUSE" in runtime.pointer_buttons
-    requested_mode = _navigation_mode_from_modifiers()
     if desired and runtime.navigation_mode != requested_mode:
         previous_mode = runtime.navigation_mode
         runtime.navigation_mode = requested_mode
         # Seed from the aim pose only when it is fresh; otherwise defer seeding to the first
         # fresh tick so a pose predating the last navigation write cannot cause a jump.
-        runtime.navigation_previous_angles = aim_angles if aim_is_fresh else None
+        runtime.navigation_previous_angles = navigation_angles if aim_is_fresh else None
         # Re-seed the turntable state from the live navigation rotation so a gesture (or an
         # add-on reload mid-session) never snaps the view or inherits stale angles.
         runtime.navigation_orbit_yaw, runtime.navigation_orbit_pitch = _turntable_angles(
@@ -394,7 +393,7 @@ def _pointer_timer():
             telemetry_event,
             mode=runtime.navigation_mode,
             previous_mode=previous_mode,
-            aim_angles=aim_angles,
+            aim_angles=navigation_angles,
             pointer_buttons=sorted(runtime.pointer_buttons),
             pointer_modifiers=sorted(runtime.pointer_modifiers),
             **_session_snapshot(session, "before"),
@@ -405,16 +404,18 @@ def _pointer_timer():
         if aim_is_fresh:
             if runtime.navigation_previous_angles is None:
                 # Deferred seed (drag began on a stale pose): establish the baseline now.
-                runtime.navigation_previous_angles = aim_angles
+                runtime.navigation_previous_angles = navigation_angles
             else:
-                navigation_delta = _angles_delta(runtime.navigation_previous_angles, aim_angles)
-            runtime.navigation_previous_angles = aim_angles
+                navigation_delta = _angles_delta(
+                    runtime.navigation_previous_angles, navigation_angles
+                )
+            runtime.navigation_previous_angles = navigation_angles
             if navigation_delta is not None:
                 _apply_xr_navigation(session, *navigation_delta, preferences)
         runtime.telemetry(
             "navigation_tick",
             mode=runtime.navigation_mode,
-            aim_angles=aim_angles,
+            aim_angles=navigation_angles,
             yaw_delta=None if navigation_delta is None else navigation_delta[0],
             pitch_delta=None if navigation_delta is None else navigation_delta[1],
             delta_accepted=navigation_delta is not None,
@@ -425,7 +426,7 @@ def _pointer_timer():
         runtime.telemetry(
             "navigation_end",
             mode=runtime.navigation_mode,
-            aim_angles=aim_angles,
+            aim_angles=navigation_angles,
             **_session_snapshot(session, "before"),
         )
         runtime.navigation_mode = None
