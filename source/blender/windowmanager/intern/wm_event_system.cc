@@ -88,6 +88,10 @@
 #include "wm_window.hh"
 #include "wm_window_private.hh"
 
+#ifdef WITH_XR_OPENXR
+#  include "wm_xr.hh"
+#endif
+
 #include "DEG_depsgraph.hh"
 #include "DEG_depsgraph_query.hh"
 
@@ -4254,6 +4258,17 @@ static void wm_event_handle_xr_mouse_event(wmWindowManager *wm,
   CTX_wm_region_set(xr_context, xr_region);
   wm_region_mouse_co(xr_context, input_event);
 
+  const bool is_button_event = ISMOUSE_BUTTON(input_event->type);
+  if (is_button_event) {
+    /* Same as the regular event path: GPU selecting (view3d.select) and other operators need
+     * an active GPU context, which the XR surface draw does not leave behind. */
+    wm_window_make_drawable(wm, win);
+    /* Aim the offscreen region along the controller so GPU picking resolves the event against the
+     * laser. Only button events pick; binding the viewport for every pointer move would also run
+     * gizmo 3D intersection tests on the offscreen region each tick. */
+    wm_xr_session_pointer_pick_setup(xr_context, &wm->xr);
+  }
+
   /* The mouse event can continue an XR navigation modal operator. Limit dispatch to operator
    * handlers that originated in the XR offscreen area so desktop modal/UI handlers do not receive
    * XR input. */
@@ -4281,10 +4296,13 @@ static void wm_event_handle_xr_mouse_event(wmWindowManager *wm,
     }
   }
 
-  if ((action & WM_HANDLER_BREAK) == 0) {
+  /* Pointer moves only need to reach modal operators (XR navigation). The region/area keymap
+   * and UI handlers are limited to button events: running them for every pointer move
+   * executes UI and keymap hover code against a region that is never drawn normally. */
+  if (is_button_event && (action & WM_HANDLER_BREAK) == 0) {
     action |= wm_event_do_region_handlers(xr_context, input_event, xr_region);
   }
-  if ((action & WM_HANDLER_BREAK) == 0) {
+  if (is_button_event && (action & WM_HANDLER_BREAK) == 0) {
     CTX_wm_region_set(xr_context, nullptr);
     wm_region_mouse_co(xr_context, input_event);
     action |= wm_handlers_do(
