@@ -284,6 +284,16 @@ void ED_area_update_region_sizes(wmWindowManager *wm, wmWindow *win, ScrArea *ar
 bool ED_area_has_shared_border(ScrArea *a, ScrArea *b);
 ScrArea *ED_area_offscreen_create(wmWindow *win, eSpace_Type space_type);
 void ED_area_offscreen_free(wmWindowManager *wm, wmWindow *win, ScrArea *area);
+/**
+ * Add default and space-type handlers to an offscreen area (created via
+ * #ED_area_offscreen_create) so events dispatched to it are handled.
+ */
+void ED_area_offscreen_handlers_init(wmWindowManager *wm, ScrArea *area);
+/**
+ * Set the window-region size of an offscreen area, used to map event coordinates
+ * (e.g. XR pointer input) into the region.
+ */
+void ED_area_offscreen_region_size_set(ScrArea *area, int width, int height);
 
 /**
  * Search all screens, even non-active or overlapping (multiple windows), return the most-likely

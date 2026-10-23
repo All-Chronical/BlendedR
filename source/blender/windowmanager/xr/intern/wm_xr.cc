@@ -143,6 +143,11 @@ bool wm_xr_init(bContext *C)
 
       /* Create the XR offscreen area (independent of any bScreen). */
       wm->xr.runtime->offscreen_area = ED_area_offscreen_create(CTX_wm_window(C), SPACE_VIEW3D);
+      /* Register keymap/UI handlers so events dispatched to the XR offscreen viewport
+       * (pointer input from the add-on) are actually handled. */
+      ED_area_offscreen_handlers_init(wm, wm->xr.runtime->offscreen_area);
+      ED_area_offscreen_region_size_set(
+          wm->xr.runtime->offscreen_area, XR_POINTER_REGION_SIZE, XR_POINTER_REGION_SIZE);
       WM_xr_session_context_ensure(&wm->xr, wm);
     }
   }

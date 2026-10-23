@@ -2350,6 +2350,57 @@ static void area_offscreen_init(ScrArea *area)
   }
 }
 
+void ED_area_offscreen_handlers_init(wmWindowManager *wm, ScrArea *area)
+{
+  BLI_assert(area->flag & AREA_FLAG_OFFSCREEN);
+  BLI_assert(area->type != nullptr);
+
+  /* Mirror #ED_area_init() handler setup for areas on a screen, minus everything that
+   * depends on a #bScreen (region rect calculation, azones, tool-system refresh).
+   * Without this, events dispatched to the offscreen area (e.g. XR pointer input) find
+   * no keymap/UI handlers and are dropped (#wm_event_handle_xr_mouse_event). */
+  ed_default_handlers(wm, area, nullptr, &area->handlers, area->type->keymapflag);
+  if (area->type->init) {
+    area->type->init(wm, area);
+  }
+
+  for (ARegion &region : area->regionbase) {
+    region_evaluate_visibility(&region);
+    if (!region.runtime->visible) {
+      continue;
+    }
+    BLI_assert(region.runtime->type != nullptr);
+    /* Gizmo maps are skipped: the offscreen region is never drawn through the normal region
+     * draw path, so gizmo groups are never created for it, and pointer-move events would run
+     * gizmo refresh/highlight code against a half-initialized region. */
+    const int keymapflag = region.runtime->type->keymapflag & ~ED_KEYMAP_GIZMO;
+    ed_default_handlers(wm, area, &region, &region.runtime->handlers, keymapflag);
+    if (region.runtime->type->init) {
+      region.runtime->type->init(wm, &region);
+    }
+  }
+}
+
+void ED_area_offscreen_region_size_set(ScrArea *area, const int width, const int height)
+{
+  BLI_assert(area->flag & AREA_FLAG_OFFSCREEN);
+
+  ARegion *region = BKE_area_find_region_type(area, RGN_TYPE_WINDOW);
+  if (region == nullptr) {
+    return;
+  }
+
+  /* The offscreen area has no #bScreen to compute region rects from, so give the window
+   * region a rect matching the offscreen render size. Events dispatched to the area
+   * (e.g. XR pointer input) map their coordinates through #region->winrct. */
+  region->winrct.xmin = 0;
+  region->winrct.ymin = 0;
+  region->winrct.xmax = width - 1;
+  region->winrct.ymax = height - 1;
+  region->winx = width;
+  region->winy = height;
+}
+
 ScrArea *ED_area_offscreen_create(wmWindow *win, eSpace_Type space_type)
 {
   ScrArea *area = MEM_new<ScrArea>(__func__);
