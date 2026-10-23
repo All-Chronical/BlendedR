@@ -17,13 +17,14 @@ POINTER_ACTIONS = {
     "left_a": (None, "shift"),
     "right_b": (None, "alt"),
     "right_a": ("MIDDLEMOUSE", None),
+    "right_trigger": ("LEFTMOUSE", None),
+    "left_trigger": ("RIGHTMOUSE", None),
 }
 
 pointer_buttons = set()
 pointer_modifiers = set()
 injected_buttons = set()
-pointer_position = [512.0, 512.0]
-pointer_previous_angles = None
+pointer_target_info = {}
 pointer_previous_world_rotation = None
 navigation_previous_angles = None
 navigation_mode = None
@@ -126,15 +127,15 @@ def telemetry(event, **values):
 
 
 def reset_input_state():
-    global navigation_mode, navigation_previous_angles, pointer_previous_angles
+    global navigation_mode, navigation_previous_angles, pointer_target_info
     global pointer_previous_world_rotation, navigation_orbit_yaw, navigation_orbit_pitch
     global session_was_running
+    pointer_target_info = {}
     pointer_buttons.clear()
     pointer_modifiers.clear()
     injected_buttons.clear()
     navigation_mode = None
     navigation_previous_angles = None
-    pointer_previous_angles = None
     pointer_previous_world_rotation = None
     navigation_orbit_yaw = 0.0
     navigation_orbit_pitch = 0.0

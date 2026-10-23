@@ -8,7 +8,9 @@ from mathutils import Matrix, Quaternion, Vector
 from . import runtime
 
 POINTER_TIMER_INTERVAL = 1.0 / 90.0
-POINTER_PIXELS_PER_RADIAN = 1000.0
+# The pick view Blender builds for button events is centered on the right controller's aim ray,
+# so the virtual pointer is always the center pixel of the 1024x1024 pick grid.
+POINTER_GRID_CENTER = 512
 NAVIGATION_DEADZONE_RADIANS = 0.001
 NAVIGATION_MAX_DELTA_RADIANS = 0.15
 ORBIT_PITCH_LIMIT = pi / 2.0
@@ -115,6 +117,44 @@ def _right_aim_angles(session, reference_rotation=None):
     direction = rotation @ Vector((0.0, 0.0, -1.0))
     direction.normalize()
     return atan2(direction.x, -direction.z), asin(max(-1.0, min(1.0, direction.y)))
+
+
+def _laser_ray_info(session):
+    """Telemetry-only prediction of what the laser touches.
+
+    Blender picks along the right controller's aim ray (the pick view is centered on it, and the
+    pointer is the grid's center pixel), so a ray cast from the same pose predicts the pick result.
+    Comparing the two in the capture shows whether a miss is a pose/projection problem or an
+    object the select engine cannot see.
+    """
+    settings = bpy.context.window_manager.xr_session_settings
+    far = max(1.0, settings.clip_end * 0.9)
+    origin = Vector(session.controller_aim_location_get(bpy.context, 1))
+    direction = Quaternion(session.controller_aim_rotation_get(bpy.context, 1)) @ Vector(
+        (0.0, 0.0, -1.0)
+    )
+    direction.normalize()
+
+    hit_object = None
+    location = None
+    distance = far
+    try:
+        hit, location, _normal, _index, hit_object, _matrix = bpy.context.scene.ray_cast(
+            bpy.context.evaluated_depsgraph_get(), origin, direction, distance=far
+        )
+    except (RuntimeError, TypeError, ValueError):
+        hit = False
+    if hit and location is not None:
+        distance = (location - origin).length
+    else:
+        hit_object = None
+    return {
+        "ray_hit": bool(hit),
+        "ray_object": hit_object.name if hit_object else None,
+        "ray_distance": distance,
+        "ray_origin": tuple(origin),
+        "ray_direction": tuple(direction),
+    }
 
 
 def _angles_delta(previous_angles, current_angles):
@@ -280,23 +320,26 @@ def _apply_xr_navigation(session, yaw_delta, pitch_delta, preferences):
 
 
 def _release_injected_buttons(session):
-    pointer_kwargs = {
-        "x": round(runtime.pointer_position[0]),
-        "y": round(runtime.pointer_position[1]),
-    }
+    pointer_kwargs = {"x": POINTER_GRID_CENTER, "y": POINTER_GRID_CENTER}
     for button in tuple(runtime.injected_buttons):
         _inject_mouse_event(session, button, "RELEASE", **pointer_kwargs)
     runtime.injected_buttons.clear()
 
 
 def _inject_mouse_event(session, event_type, event_value, **kwargs):
-    """Keep the experimental native-event transport observable but non-authoritative."""
+    """Queue an XR offscreen-viewport mouse event and keep transport observable."""
     if not hasattr(session, "mouse_event_add"):
         runtime.debug_state["last_mouse_event"] = "mouse_event_add is unavailable in this Blender build"
         runtime.debug_state["mouse_events_rejected"] += 1
         return False
 
-    queued = session.mouse_event_add(bpy.context, event_type, event_value, **kwargs)
+    try:
+        queued = session.mouse_event_add(bpy.context, event_type, event_value, **kwargs)
+        error = None
+    except (RuntimeError, TypeError, ValueError) as exception:
+        queued = False
+        error = str(exception)
+
     runtime.debug_state["last_mouse_event"] = (
         f"{event_type}: {event_value} ({'queued' if queued else 'rejected'})"
     )
@@ -305,19 +348,18 @@ def _inject_mouse_event(session, event_type, event_value, **kwargs):
     else:
         runtime.debug_state["mouse_events_rejected"] += 1
 
-    runtime.telemetry(
-        "native_mouse_event",
-        type=event_type,
-        value=event_value,
-        queued=queued,
-        x=kwargs.get("x"),
-        y=kwargs.get("y"),
-        ctrl=kwargs.get("ctrl", False),
-        shift=kwargs.get("shift", False),
-        alt=kwargs.get("alt", False),
-    )
-    if runtime.preferences().debug_input:
-        print(f"[BlendedR] Mouse event: {runtime.debug_state['last_mouse_event']}")
+    if event_type != "MOUSEMOVE":
+        runtime.telemetry(
+            "native_mouse_event",
+            type=event_type,
+            value=event_value,
+            queued=queued,
+            x=kwargs.get("x"),
+            y=kwargs.get("y"),
+            pointer_buttons=sorted(runtime.pointer_buttons),
+            error=error,
+            **runtime.pointer_target_info,
+        )
     return queued
 
 
@@ -338,13 +380,17 @@ def _pointer_timer():
             runtime.injected_buttons.clear()
         runtime.navigation_mode = None
         runtime.navigation_previous_angles = None
-        runtime.pointer_previous_angles = None
         runtime.pointer_previous_world_rotation = None
         runtime.debug_state["navigation_mode"] = "None"
         return POINTER_TIMER_INTERVAL
 
     if preferences.sync_host_view:
         _sync_host_view_presentation()
+
+    # The fork's XR draw path renders the right controller aim ray in the headset view.
+    settings = bpy.context.window_manager.xr_session_settings
+    if settings.controller_draw_style not in {"DARK_RAY", "LIGHT_RAY"}:
+        settings.controller_draw_style = "LIGHT_RAY"
 
     _poll_action_states(session)
 
@@ -365,14 +411,9 @@ def _pointer_timer():
     else:
         navigation_angles = pointer_angles
 
-    if aim_is_fresh:
-        if runtime.pointer_previous_angles is not None:
-            pointer_delta = _angles_delta(runtime.pointer_previous_angles, pointer_angles)
-            if pointer_delta is not None:
-                yaw_delta, pitch_delta = pointer_delta
-                runtime.pointer_position[0] += yaw_delta * POINTER_PIXELS_PER_RADIAN
-                runtime.pointer_position[1] += pitch_delta * POINTER_PIXELS_PER_RADIAN
-        runtime.pointer_previous_angles = pointer_angles
+    if aim_is_fresh and not runtime.injected_buttons:
+        # Ray-cast telemetry is frozen while buttons are held so it describes the clicked target.
+        runtime.pointer_target_info = _laser_ray_info(session)
         runtime.pointer_previous_world_rotation = aim_world_rotation
 
     desired = "MIDDLEMOUSE" in runtime.pointer_buttons
@@ -434,26 +475,28 @@ def _pointer_timer():
         runtime.debug_state["navigation_mode"] = "None"
 
     pointer_kwargs = {
-        "x": round(runtime.pointer_position[0]),
-        "y": round(runtime.pointer_position[1]),
+        "x": POINTER_GRID_CENTER,
+        "y": POINTER_GRID_CENTER,
         "ctrl": "ctrl" in runtime.pointer_modifiers,
         "shift": "shift" in runtime.pointer_modifiers,
         "alt": "alt" in runtime.pointer_modifiers,
     }
-    if desired:
-        _inject_mouse_event(session, "MOUSEMOVE", "NOTHING", **pointer_kwargs)
+    _inject_mouse_event(session, "MOUSEMOVE", "NOTHING", **pointer_kwargs)
 
-    injected = "MIDDLEMOUSE" in runtime.injected_buttons
-    if desired != injected and _inject_mouse_event(
-        session,
-        "MIDDLEMOUSE",
-        "PRESS" if desired else "RELEASE",
-        **pointer_kwargs,
-    ):
-        if desired:
-            runtime.injected_buttons.add("MIDDLEMOUSE")
-        else:
-            runtime.injected_buttons.discard("MIDDLEMOUSE")
+    desired_buttons = set(runtime.pointer_buttons)
+    for button in ("MIDDLEMOUSE", "LEFTMOUSE", "RIGHTMOUSE"):
+        desired_button = button in desired_buttons
+        injected = button in runtime.injected_buttons
+        if desired_button != injected and _inject_mouse_event(
+            session,
+            button,
+            "PRESS" if desired_button else "RELEASE",
+            **pointer_kwargs,
+        ):
+            if desired_button:
+                runtime.injected_buttons.add(button)
+            else:
+                runtime.injected_buttons.discard(button)
     return POINTER_TIMER_INTERVAL
 
 

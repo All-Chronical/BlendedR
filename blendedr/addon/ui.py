@@ -18,11 +18,7 @@ class BLENDEDR_AddonPreferences(bpy.types.AddonPreferences):
         description="Replace Blender's XR action set when the next XR session starts",
         default=True,
     )
-    debug_input: BoolProperty(
-        name="Debug Input",
-        description="Print XR action and native-event transport activity to the system console",
-        default=False,
-    )
+
     capture_navigation_log: BoolProperty(
         name="Capture Navigation Log",
         description="Write high-frequency input and XR-view telemetry to blendedr/build",
@@ -60,8 +56,9 @@ class BLENDEDR_AddonPreferences(bpy.types.AddonPreferences):
         layout.prop(self, "orbit_sensitivity")
         layout.prop(self, "pan_sensitivity")
         layout.prop(self, "zoom_sensitivity")
-        layout.prop(self, "debug_input")
+        layout.separator()
         layout.prop(self, "capture_navigation_log")
+        layout.label(text=f"Log file: {runtime.navigation_log_path()}")
         layout.label(text="Restart the XR session after changing action-set settings.")
 
 
@@ -80,30 +77,22 @@ class VIEW3D_PT_blendedr(bpy.types.Panel):
         layout.prop(preferences, "orbit_sensitivity")
         layout.prop(preferences, "pan_sensitivity")
         layout.prop(preferences, "zoom_sensitivity")
-        layout.prop(preferences, "debug_input")
+        layout.separator()
         layout.prop(preferences, "capture_navigation_log")
         layout.label(text="Orbit: hold right A and aim-drag (yaw + pitch; global roll locked).")
         layout.label(text="Pan: hold left A with right A and aim-drag.")
         layout.label(text="Zoom: hold left B with right A and aim up/down (dollies toward the")
         layout.label(text="3D cursor, like desktop view zoom; no world scaling).")
         layout.label(text="Modifiers can be pressed before or after right A.")
-        layout.label(text="Right B sends Alt to native pointer targets.")
+        layout.label(text="Right trigger: left click; left trigger: right click.")
+        layout.label(text="Right controller aim ray points the XR mouse cursor.")
         layout.separator()
-        layout.label(text=f"Action set active: {runtime.debug_state['action_set_active']}")
-        layout.label(text=f"Face-button profiles: {runtime.debug_state['bound_button_profiles']}")
-        layout.label(text=f"Action events: {runtime.debug_state['action_events']}")
-        layout.label(text=f"Last action: {runtime.debug_state['last_action']}")
-        layout.label(text=f"Navigation mode: {runtime.debug_state['navigation_mode']}")
-        layout.label(text=f"Host 3D View: {runtime.debug_state['host_view']}")
-        layout.label(text=f"Last mouse event: {runtime.debug_state['last_mouse_event']}")
-        layout.label(text=f"Navigation log: {runtime.debug_state['navigation_log']}")
-        layout.label(text=f"Log file: {runtime.navigation_log_path()}")
-        layout.label(
-            text=(
-                f"Native events queued: {runtime.debug_state['mouse_events_queued']} "
-                f"rejected: {runtime.debug_state['mouse_events_rejected']}"
-            )
-        )
+        layout.label(text=f"Input actions: {'Active' if runtime.debug_state['action_set_active'] else 'Inactive'}")
+        layout.label(text=f"Navigation: {runtime.debug_state['navigation_mode']}")
+        layout.label(text=f"Last pointer event: {runtime.debug_state['last_mouse_event']}")
+        if preferences.capture_navigation_log:
+            layout.label(text=f"Telemetry: {runtime.debug_state['navigation_log']}")
+            layout.label(text=f"Log: {runtime.navigation_log_path()}")
 
 
 CLASSES = (
