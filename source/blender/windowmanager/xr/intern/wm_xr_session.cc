@@ -6,6 +6,8 @@
  * \ingroup wm
  */
 
+#include <cmath>
+
 #include "BKE_callbacks.hh"
 #include "BKE_context.hh"
 #include "BKE_global.hh"
@@ -33,6 +35,7 @@
 
 #include "ED_screen.hh"
 #include "ED_space_api.hh"
+#include "ED_view3d.hh"
 
 #include "GHOST_Xr-api.hh"
 
@@ -485,6 +488,20 @@ bContext *WM_xr_session_context_get(const wmXrData *xr)
   return xr->runtime ? xr->runtime->b_context : nullptr;
 }
 
+static int wm_xr_mouse_button_index(const wmEventType type)
+{
+  switch (type) {
+    case LEFTMOUSE:
+      return 0;
+    case MIDDLEMOUSE:
+      return 1;
+    case RIGHTMOUSE:
+      return 2;
+    default:
+      return -1;
+  }
+}
+
 bool WM_xr_session_mouse_event_add(wmXrData *xr,
                                    const wmWindowManager *wm,
                                    const wmEvent *event,
@@ -497,16 +514,16 @@ bool WM_xr_session_mouse_event_add(wmXrData *xr,
     *r_error = "XR runtime is unavailable";
     return false;
   }
-  if (!ELEM(event->type, MOUSEMOVE, MIDDLEMOUSE)) {
-    *r_error = "only MOUSEMOVE and MIDDLEMOUSE events are supported";
+  if (!ELEM(event->type, MOUSEMOVE, LEFTMOUSE, MIDDLEMOUSE, RIGHTMOUSE)) {
+    *r_error = "unsupported XR mouse event";
     return false;
   }
   if (event->type == MOUSEMOVE && event->val != KM_NOTHING) {
     *r_error = "MOUSEMOVE events must use the NOTHING value";
     return false;
   }
-  if (event->type == MIDDLEMOUSE && !ELEM(event->val, KM_PRESS, KM_RELEASE)) {
-    *r_error = "MIDDLEMOUSE events must use PRESS or RELEASE";
+  if (ISMOUSE_BUTTON(event->type) && !ELEM(event->val, KM_PRESS, KM_RELEASE)) {
+    *r_error = "mouse-button events must use PRESS or RELEASE";
     return false;
   }
 
@@ -516,8 +533,86 @@ bool WM_xr_session_mouse_event_add(wmXrData *xr,
     return false;
   }
 
-  wm_event_add_xr_mouse(xr_win, event);
+  wmEvent xr_event = *event;
+  const int button_index = wm_xr_mouse_button_index(event->type);
+  if (button_index >= 0) {
+    if (event->val == KM_PRESS) {
+      xr->runtime->mouse_button_press_type[button_index] = event->type;
+      copy_v2_v2_int(xr->runtime->mouse_button_press_xy[button_index], event->xy);
+      xr->runtime->mouse_button_press_modifier[button_index] = event->modifier;
+    }
+    else {
+      /* Release events need the matching press recorded so click/drag detection works. */
+      xr_event.prev_type = event->type;
+      xr_event.prev_val = KM_PRESS;
+      xr_event.prev_press_type = wmEventType(xr->runtime->mouse_button_press_type[button_index]);
+      copy_v2_v2_int(xr_event.prev_press_xy, xr->runtime->mouse_button_press_xy[button_index]);
+      xr_event.prev_press_modifier = wmEventModifierFlag(
+          xr->runtime->mouse_button_press_modifier[button_index]);
+      xr->runtime->mouse_button_press_type[button_index] = 0;
+    }
+  }
+  wm_event_add_xr_mouse(xr_win, &xr_event);
   return true;
+}
+
+void wm_xr_session_pointer_pick_setup(const bContext *xr_context, wmXrData *xr)
+{
+  ScrArea *area = CTX_wm_area(xr_context);
+  ARegion *region = CTX_wm_region(xr_context);
+  if (area == nullptr || region == nullptr || area->spacetype != SPACE_VIEW3D ||
+      region->regiontype != RGN_TYPE_WINDOW)
+  {
+    return;
+  }
+
+  const wmXrSessionState *state = &xr->runtime->session_state;
+  View3D *v3d = static_cast<View3D *>(area->spacedata.first);
+  if (!state->is_view_data_set || v3d == nullptr || region->regiondata == nullptr) {
+    return;
+  }
+
+  /* Blender derives the projection from View3D lens/clip (a stored window matrix would be
+   * discarded when picking), so a square region and `lens = 18 / tan(half-angle)` (36mm default
+   * sensor) give a symmetric frustum. */
+  const XrSessionSettings *settings = &xr->session_settings;
+  v3d->lens = 18.0f / tanf(XR_POINTER_PICK_HALF_ANGLE);
+  v3d->clip_start = settings->clip_start;
+  v3d->clip_end = settings->clip_end;
+  ED_area_offscreen_region_size_set(area, XR_POINTER_REGION_SIZE, XR_POINTER_REGION_SIZE);
+
+  Scene *scene = CTX_data_scene(xr_context);
+  const Depsgraph *depsgraph = CTX_data_ensure_evaluated_depsgraph(xr_context);
+
+  /* Pick from the right controller's aim pose (the laser's origin and direction), so the grid's
+   * center pixel is exactly the laser ray and no eye/hand parallax or headset-FOV limit applies.
+   * Falls back to the viewer pose when no right controller is tracked. */
+  float pick_viewmat[4][4];
+  const wmXrController *aim_controller = nullptr;
+  for (const wmXrController &controller : state->controllers) {
+    if ((controller.aim_active || controller.grip_active) &&
+        STREQ(controller.subaction_path, "/user/hand/right"))
+    {
+      aim_controller = &controller;
+      break;
+    }
+  }
+  if (aim_controller != nullptr) {
+    normalize_m4_m4(pick_viewmat, aim_controller->aim_mat);
+    invert_m4(pick_viewmat);
+  }
+  else {
+    copy_m4_m4(pick_viewmat, state->viewer_viewmat);
+  }
+  ED_view3d_update_viewmat(depsgraph, scene, v3d, region, pick_viewmat, nullptr, nullptr, true);
+
+  /* The select engine renders into a region viewport (DRW_draw_select_id); without one it
+   * bails out and picking always misses. Bind only to size the viewport, then release
+   * immediately: binding holds the draw GPU context (a non-recursive mutex) until unbound, and
+   * picking operators enable it themselves, so leaving it bound would deadlock the first select. */
+  WM_draw_region_viewport_ensure(scene, region, SPACE_VIEW3D);
+  WM_draw_region_viewport_bind(region);
+  WM_draw_region_viewport_unbind(region);
 }
 
 bool WM_xr_session_state_viewer_pose_location_get(const wmXrData *xr, float r_location[3])
