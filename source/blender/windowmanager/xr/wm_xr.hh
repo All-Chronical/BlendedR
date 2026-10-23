@@ -23,6 +23,13 @@ void wm_xr_exit(wmWindowManager *wm);
 void wm_xr_session_toggle(wmWindowManager *wm, wmXrSessionExitFn session_exit_fn);
 bool wm_xr_events_handle(wmWindowManager *wm);
 
+/**
+ * Prepare the XR offscreen area's window region for GPU picking with pointer button events:
+ * point its view matrix along the right controller's aim pose and ensure that the region
+ * viewport is available to the select engine. Defined in `wm_xr_session.cc`.
+ */
+void wm_xr_session_pointer_pick_setup(const bContext *xr_context, wmXrData *xr);
+
 /* `wm_xr_operators.cc` */
 
 void wm_xr_operatortypes_register();
