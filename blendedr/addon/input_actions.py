@@ -80,6 +80,23 @@ def _add_modifier_actions(action_map):
             binding.profile = profile
             binding.component_paths.new(MODIFIER_PROFILE_PATHS[binding_name][component_index])
 
+    for action_name, hand_path in (
+        ("right_trigger", runtime.RIGHT_HAND_PATH),
+        ("left_trigger", runtime.LEFT_HAND_PATH),
+    ):
+        action = action_map.actionmap_items.new(f"blendedr_{action_name}", True)
+        action.type = "FLOAT"
+        action.user_paths.new(hand_path)
+        action.op = "blendedr.pointer_input"
+        action.op_mode = "MODAL"
+        for binding_name, profile in CONTROLLER_PROFILES:
+            if binding_name == "simple" or not _profile_is_enabled(binding_name):
+                continue
+            binding = action.bindings.new(binding_name, True)
+            binding.profile = profile
+            binding.component_paths.new("/input/trigger/value")
+            binding.threshold = 0.5
+
 
 class BLENDEDR_OT_pointer_input(bpy.types.Operator):
     """Collect controller button state for the navigation adapter."""
@@ -141,9 +158,12 @@ class BLENDEDR_OT_pointer_input(bpy.types.Operator):
             pointer_buttons=sorted(runtime.pointer_buttons),
             pointer_modifiers=sorted(runtime.pointer_modifiers),
         )
-        if runtime.preferences().debug_input:
-            print(f"[BlendedR] XR action: {runtime.debug_state['last_action']}")
         return {"RUNNING_MODAL"}
+
+
+def _input_setup_failed(message):
+    runtime.telemetry("input_setup", active=False, error=message)
+    print(f"[BlendedR] {message}")
 
 
 @persistent
@@ -154,16 +174,17 @@ def create_modifier_actions(_unused=None):
     runtime.debug_state["action_set_active"] = False
     preferences = runtime.preferences()
     if not preferences.disable_builtin_navigation:
+        runtime.telemetry("input_setup", active=False, error="built-in navigation replacement disabled")
         return
 
     session_state = context.window_manager.xr_session_state
     if not session_state:
-        print("[BlendedR] XR session state is unavailable; modifier actions were not created.")
+        _input_setup_failed("XR session state is unavailable; input actions were not created.")
         return
 
     action_map = session_state.actionmaps.new(session_state, runtime.ACTION_MAP_NAME, True)
     if not action_map:
-        print("[BlendedR] Could not create the modifier XR action map.")
+        _input_setup_failed("Could not create the XR input action map.")
         return
 
     _add_pose_action(
@@ -183,18 +204,17 @@ def create_modifier_actions(_unused=None):
     _add_modifier_actions(action_map)
 
     if not session_state.action_set_create(context, action_map):
-        print("[BlendedR] Could not create the modifier XR action set.")
+        _input_setup_failed("Could not create the XR input action set.")
         return
 
     for action in action_map.actionmap_items:
         if not session_state.action_create(context, action_map, action):
-            print(f"[BlendedR] Could not create XR action: {action.name}")
+            _input_setup_failed(f"Could not create XR action: {action.name}")
             return
         for binding in action.bindings:
             if not session_state.action_binding_create(context, action_map, action, binding):
-                print(
-                    f"[BlendedR] Could not bind XR action {action.name} "
-                    f"for profile {binding.profile}."
+                _input_setup_failed(
+                    f"Could not bind XR action {action.name} for profile {binding.profile}."
                 )
                 return
 
@@ -204,16 +224,24 @@ def create_modifier_actions(_unused=None):
         runtime.GRIP_POSE_ACTION_NAME,
         runtime.AIM_POSE_ACTION_NAME,
     ):
-        print("[BlendedR] Could not configure controller pose actions.")
+        _input_setup_failed("Could not configure controller pose actions.")
         return
     if not session_state.active_action_set_set(context, runtime.ACTION_MAP_NAME):
-        print("[BlendedR] Could not activate the modifier XR action set.")
+        _input_setup_failed("Could not activate the XR input action set.")
         return
 
     runtime.debug_state["action_set_active"] = True
     runtime.debug_state["bound_button_profiles"] = ", ".join(MODIFIER_PROFILE_PATHS)
-    if preferences.debug_input:
-        print("[BlendedR] Modifier XR action set activated for Oculus Touch face buttons.")
+    runtime.telemetry(
+        "input_setup",
+        active=True,
+        action_names=[action.name for action in action_map.actionmap_items],
+        trigger_profiles=[
+            profile_name
+            for profile_name, _profile in CONTROLLER_PROFILES
+            if profile_name != "simple" and _profile_is_enabled(profile_name)
+        ],
+    )
 
 
 def register():
