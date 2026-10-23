@@ -907,9 +907,9 @@ static bool rna_XrSessionState_mouse_event_add(ReportList *reports,
                                                bool alt)
 {
 #  ifdef WITH_XR_OPENXR
-  if (!ELEM(type, MOUSEMOVE, MIDDLEMOUSE) ||
+  if (!ELEM(type, MOUSEMOVE, LEFTMOUSE, MIDDLEMOUSE, RIGHTMOUSE) ||
       (type == MOUSEMOVE && value != KM_NOTHING) ||
-      (type == MIDDLEMOUSE && !ELEM(value, KM_PRESS, KM_RELEASE)))
+      (ISMOUSE_BUTTON(type) && !ELEM(value, KM_PRESS, KM_RELEASE)))
   {
     BKE_report(reports, RPT_ERROR, "Unsupported XR mouse event");
     return false;
@@ -2673,12 +2673,16 @@ static void rna_def_xr_session_state(BlenderRNA *brna)
   RNA_def_function_flag(func, FUNC_USE_REPORTS);
   RNA_def_function_ui_description(
       func,
-      "Queue MOUSEMOVE or MIDDLEMOUSE input for the XR session's offscreen 3D viewport");
+      "Queue pointer movement and mouse-button input for the XR session's offscreen 3D viewport");
   RNA_def_function_flag(func, FUNC_NO_SELF);
   parm = RNA_def_pointer(func, "context", "Context", "", "");
   RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
-  parm = RNA_def_enum(
-      func, "type", rna_enum_event_type_items, 0, "Type", "MOUSEMOVE or MIDDLEMOUSE");
+  parm = RNA_def_enum(func,
+                      "type",
+                      rna_enum_event_type_items,
+                      0,
+                      "Type",
+                      "MOUSEMOVE, LEFTMOUSE, MIDDLEMOUSE, or RIGHTMOUSE");
   RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
   parm = RNA_def_enum(
       func, "value", rna_enum_event_value_items, 0, "Value", "Input event value");

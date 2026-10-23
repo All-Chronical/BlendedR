@@ -19,6 +19,7 @@
 #include "BLI_math_matrix.h"
 #include "BLI_math_rotation.h"
 #include "BLI_math_vector.h"
+#include "BLI_string.h"
 
 #include "BKE_context.hh"
 #include "BKE_scene.hh"
@@ -380,7 +381,9 @@ static void wm_xr_controller_aim_draw(const XrSessionSettings *settings, wmXrSes
     GPU_blend(GPU_BLEND_ALPHA);
 
     for (wmXrController &controller : state->controllers) {
-      if (!controller.grip_active) {
+      if (!controller.grip_active ||
+          !STREQ(controller.subaction_path, "/user/hand/right"))
+      {
         continue;
       }
 
