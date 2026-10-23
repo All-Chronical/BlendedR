@@ -150,6 +150,12 @@ struct wmXrRuntimeData {
   wmXrSessionExitFn exit_fn;
 
   ListBaseT<XrActionMap> actionmaps;
+  /* Zero-initialized by the MEM_new_zeroed allocation in wm_xr_runtime_data_create();
+   * default member initializers are not allowed here because they would make this struct
+   * non-trivially-constructible and break that allocation. */
+  int mouse_button_press_type[3];
+  int mouse_button_press_xy[3][2];
+  int mouse_button_press_modifier[3];
   short actactionmap;
   short selactionmap;
 };
@@ -288,6 +294,20 @@ void wm_xr_session_gpu_binding_context_destroy(GHOST_IContext *context);
 
 void wm_xr_session_actions_init(wmXrData *xr);
 void wm_xr_session_actions_update(wmWindowManager *wm);
+
+/**
+ * Side length in pixels of the square window region of the XR offscreen area used for pointer
+ * picking. A square region keeps Blender's lens-based projection symmetric on both axes.
+ */
+constexpr int XR_POINTER_REGION_SIZE = 1024;
+
+/**
+ * Half-angle (radians) of the square pick frustum rendered around the right controller's aim
+ * ray. The add-on keeps the pointer at the center of the pick grid, so this only bounds how far
+ * from the ray a pick can land: 0.1 rad with a 14 px radius is about 2.7 cm at 10 m.
+ */
+constexpr float XR_POINTER_PICK_HALF_ANGLE = 0.1f;
+
 void wm_xr_session_controller_data_populate(const wmXrAction *grip_action,
                                             const wmXrAction *aim_action,
                                             wmXrData *xr);
