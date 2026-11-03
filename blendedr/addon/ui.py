@@ -90,6 +90,9 @@ class VIEW3D_PT_blendedr(bpy.types.Panel):
         layout.label(text=f"Input actions: {'Active' if runtime.debug_state['action_set_active'] else 'Inactive'}")
         layout.label(text=f"Navigation: {runtime.debug_state['navigation_mode']}")
         layout.label(text=f"Last pointer event: {runtime.debug_state['last_mouse_event']}")
+        active_ob = context.active_object
+        layout.label(text=f"Active object: {active_ob.name if active_ob else 'None'}")
+        layout.label(text=f"Selected: {len(context.selected_objects)} objects")
         if preferences.capture_navigation_log:
             layout.label(text=f"Telemetry: {runtime.debug_state['navigation_log']}")
             layout.label(text=f"Log: {runtime.navigation_log_path()}")

@@ -1,6 +1,6 @@
 """Host View3D presentation sync and authoritative XR navigation."""
 
-from math import asin, atan2, exp, pi
+from math import asin, atan2, exp, pi, tan
 
 import bpy
 from mathutils import Matrix, Quaternion, Vector
@@ -11,6 +11,8 @@ POINTER_TIMER_INTERVAL = 1.0 / 90.0
 # The pick view Blender builds for button events is centered on the right controller's aim ray,
 # so the virtual pointer is always the center pixel of the 1024x1024 pick grid.
 POINTER_GRID_CENTER = 512
+# Must match XR_POINTER_PICK_HALF_ANGLE in wm_xr_intern.hh.
+POINTER_PICK_HALF_ANGLE = 0.1
 NAVIGATION_DEADZONE_RADIANS = 0.001
 NAVIGATION_MAX_DELTA_RADIANS = 0.15
 ORBIT_PITCH_LIMIT = pi / 2.0
@@ -319,6 +321,28 @@ def _apply_xr_navigation(session, yaw_delta, pitch_delta, preferences):
         session.navigation_location = Vector(session.navigation_location) + offset * (factor - 1.0)
 
 
+def drag_pointer_pixels(start_loc, start_rot, current_loc, current_rot, distance):
+    """Project the controller's motion since the press into the pick grid (pixels).
+
+    The pick view is built once at press time from the press aim pose, so the pixel offset is the
+    displacement of the point `distance` along the aim ray, measured in the press-time right/up
+    axes. Pure function with no session state; covered by blendedr/tests.
+    """
+    d0 = max(0.2, distance)
+    forward = Vector((0.0, 0.0, -1.0))
+    point_start = start_loc + d0 * (start_rot @ forward)
+    point_now = current_loc + d0 * (current_rot @ forward)
+    delta = point_now - point_start
+    dx_world = delta.dot(start_rot @ Vector((1.0, 0.0, 0.0)))
+    dy_world = delta.dot(start_rot @ Vector((0.0, 1.0, 0.0)))
+    # 1 meter at distance d0 spans 512 / (d0 * tan(half_angle)) pixels of the pick grid.
+    scale = POINTER_GRID_CENTER / (d0 * tan(POINTER_PICK_HALF_ANGLE))
+    return (
+        int(round(POINTER_GRID_CENTER + dx_world * scale)),
+        int(round(POINTER_GRID_CENTER + dy_world * scale)),
+    )
+
+
 def _release_injected_buttons(session):
     pointer_kwargs = {"x": POINTER_GRID_CENTER, "y": POINTER_GRID_CENTER}
     for button in tuple(runtime.injected_buttons):
@@ -348,7 +372,18 @@ def _inject_mouse_event(session, event_type, event_value, **kwargs):
     else:
         runtime.debug_state["mouse_events_rejected"] += 1
 
+    if event_type == "MOUSEMOVE" and runtime.injected_buttons:
+        runtime.telemetry(
+            "drag_move",
+            x=kwargs.get("x"),
+            y=kwargs.get("y"),
+            queued=queued,
+            buttons=sorted(runtime.injected_buttons),
+            error=error,
+        )
     if event_type != "MOUSEMOVE":
+        target_info = _laser_ray_info(session) if session else runtime.pointer_target_info
+        active_ob = bpy.context.active_object
         runtime.telemetry(
             "native_mouse_event",
             type=event_type,
@@ -357,8 +392,10 @@ def _inject_mouse_event(session, event_type, event_value, **kwargs):
             x=kwargs.get("x"),
             y=kwargs.get("y"),
             pointer_buttons=sorted(runtime.pointer_buttons),
+            active_object=active_ob.name if active_ob else None,
+            selected_objects=[ob.name for ob in bpy.context.selected_objects],
             error=error,
-            **runtime.pointer_target_info,
+            **target_info,
         )
     return queued
 
@@ -474,16 +511,61 @@ def _pointer_timer():
         runtime.navigation_previous_angles = None
         runtime.debug_state["navigation_mode"] = "None"
 
+    desired_buttons = set(runtime.pointer_buttons)
+
+    # Compute laser drag coordinates if a drag button (LEFTMOUSE) is active
+    curr_aim_loc = None
+    curr_aim_rot = None
+    if session:
+        try:
+            loc = session.controller_aim_location_get(bpy.context, 1)
+            rot = session.controller_aim_rotation_get(bpy.context, 1)
+            if loc is not None and rot is not None:
+                curr_aim_loc = Vector(loc)
+                curr_aim_rot = Quaternion(rot)
+        except (RuntimeError, TypeError, ValueError, IndexError):
+            pass
+
+    pointer_x = POINTER_GRID_CENTER
+    pointer_y = POINTER_GRID_CENTER
+
+    # If LEFTMOUSE just transitioned to pressed, seed the drag baseline
+    if "LEFTMOUSE" in desired_buttons and "LEFTMOUSE" not in runtime.injected_buttons:
+        if curr_aim_loc is not None and curr_aim_rot is not None:
+            runtime.drag_start_aim_loc = curr_aim_loc.copy()
+            runtime.drag_start_aim_rot = curr_aim_rot.copy()
+            target_dist = (
+                runtime.pointer_target_info.get("ray_distance")
+                if runtime.pointer_target_info
+                else None
+            )
+            runtime.drag_distance = target_dist if (target_dist and target_dist > 0.1) else 2.0
+    elif "LEFTMOUSE" in runtime.injected_buttons:
+        # Drag in progress (also on the release tick, so the RELEASE carries the final drag
+        # position instead of snapping back to the press point): compute projected pixel delta
+        if (
+            runtime.drag_start_aim_loc is not None
+            and runtime.drag_start_aim_rot is not None
+            and curr_aim_loc is not None
+            and curr_aim_rot is not None
+        ):
+            pointer_x, pointer_y = drag_pointer_pixels(
+                runtime.drag_start_aim_loc,
+                runtime.drag_start_aim_rot,
+                curr_aim_loc,
+                curr_aim_rot,
+                runtime.drag_distance,
+            )
+
     pointer_kwargs = {
-        "x": POINTER_GRID_CENTER,
-        "y": POINTER_GRID_CENTER,
+        "x": pointer_x,
+        "y": pointer_y,
         "ctrl": "ctrl" in runtime.pointer_modifiers,
         "shift": "shift" in runtime.pointer_modifiers,
         "alt": "alt" in runtime.pointer_modifiers,
     }
     _inject_mouse_event(session, "MOUSEMOVE", "NOTHING", **pointer_kwargs)
 
-    desired_buttons = set(runtime.pointer_buttons)
     for button in ("MIDDLEMOUSE", "LEFTMOUSE", "RIGHTMOUSE"):
         desired_button = button in desired_buttons
         injected = button in runtime.injected_buttons
@@ -497,6 +579,52 @@ def _pointer_timer():
                 runtime.injected_buttons.add(button)
             else:
                 runtime.injected_buttons.discard(button)
+                if button == "LEFTMOUSE":
+                    runtime.drag_start_aim_loc = None
+                    runtime.drag_start_aim_rot = None
+
+    # Oversee live selection changes and object transforms in XR runtime
+    try:
+        active_ob = bpy.context.active_object
+        active_name = active_ob.name if active_ob else None
+        selected_names = tuple(sorted(ob.name for ob in bpy.context.selected_objects))
+        if runtime.previous_active_object is not None or runtime.previous_selected_objects is not None:
+            if (
+                active_name != runtime.previous_active_object
+                or selected_names != runtime.previous_selected_objects
+            ):
+                runtime.telemetry(
+                    "selection_change",
+                    active_object=active_name,
+                    previous_active_object=runtime.previous_active_object,
+                    selected_objects=list(selected_names),
+                    previous_selected_objects=list(runtime.previous_selected_objects or ()),
+                    mode=bpy.context.mode,
+                )
+        runtime.previous_active_object = active_name
+        runtime.previous_selected_objects = selected_names
+
+        if active_ob:
+            loc = tuple(round(c, 4) for c in active_ob.matrix_world.translation)
+            if (
+                runtime.previous_active_object_loc is not None
+                and runtime.previous_active_object == active_name
+                and loc != runtime.previous_active_object_loc
+            ):
+                delta = tuple(round(a - b, 4) for a, b in zip(loc, runtime.previous_active_object_loc))
+                runtime.telemetry(
+                    "object_transform",
+                    object=active_name,
+                    location=loc,
+                    previous_location=runtime.previous_active_object_loc,
+                    delta=delta,
+                )
+            runtime.previous_active_object_loc = loc
+        else:
+            runtime.previous_active_object_loc = None
+    except Exception:
+        pass
+
     return POINTER_TIMER_INTERVAL
 
 

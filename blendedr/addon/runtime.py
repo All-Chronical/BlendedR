@@ -31,6 +31,13 @@ navigation_mode = None
 navigation_orbit_yaw = 0.0
 navigation_orbit_pitch = 0.0
 session_was_running = False
+previous_active_object = None
+previous_selected_objects = None
+previous_active_object_loc = None
+previous_active_tool = None
+drag_start_aim_loc = None
+drag_start_aim_rot = None
+drag_distance = 2.0
 
 debug_state = {
     "action_events": 0,
@@ -47,6 +54,10 @@ debug_state = {
 
 _navigation_log_enabled = False
 _navigation_log_path = Path(__file__).resolve().parent.parent / "build" / "blendedr_navigation.jsonl"
+# The fork's C++ XR event dispatch writes its own JSONL stage trace to this path while the
+# BLENDEDR_XR_TRACE environment variable is set (see wm_xr_trace in wm_event_system.cc).
+XR_TRACE_ENV = "BLENDEDR_XR_TRACE"
+_xr_trace_path = _navigation_log_path.with_name("blendedr_xr_trace.jsonl")
 
 
 def preferences():
@@ -74,8 +85,10 @@ def set_navigation_log_enabled(enabled):
     global _navigation_log_enabled
     _navigation_log_enabled = enabled
     if not enabled:
+        os.environ.pop(XR_TRACE_ENV, None)
         debug_state["navigation_log"] = "Disabled"
         return
+    os.environ[XR_TRACE_ENV] = str(_xr_trace_path)
 
     try:
         _navigation_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -130,6 +143,8 @@ def reset_input_state():
     global navigation_mode, navigation_previous_angles, pointer_target_info
     global pointer_previous_world_rotation, navigation_orbit_yaw, navigation_orbit_pitch
     global session_was_running
+    global previous_active_object, previous_selected_objects, previous_active_object_loc, previous_active_tool
+    global drag_start_aim_loc, drag_start_aim_rot, drag_distance
     pointer_target_info = {}
     pointer_buttons.clear()
     pointer_modifiers.clear()
@@ -140,4 +155,11 @@ def reset_input_state():
     navigation_orbit_yaw = 0.0
     navigation_orbit_pitch = 0.0
     session_was_running = False
+    previous_active_object = None
+    previous_selected_objects = None
+    previous_active_object_loc = None
+    previous_active_tool = None
+    drag_start_aim_loc = None
+    drag_start_aim_rot = None
+    drag_distance = 2.0
     debug_state["navigation_mode"] = "None"

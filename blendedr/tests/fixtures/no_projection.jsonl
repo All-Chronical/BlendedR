@@ -1,0 +1,18 @@
+{"src": "cpp", "seq": 1, "stage": "event_in", "type": 1, "val": 1, "xy": [512, 512], "press_type": 1, "press_xy": [512, 512], "check_drag": 0, "check_click": 0, "drag_handled": 0, "xr_modal_ops": "", "gz_highlight": "", "gz_modal": ""}
+{"src": "cpp", "seq": 1, "stage": "modal_done", "action": 0}
+{"src": "cpp", "seq": 1, "stage": "event_out", "region_handlers": 1, "action": 0, "check_drag": 1, "check_click": 1, "drag_handled": 0, "gz_highlight": "", "gz_modal": ""}
+{"src": "cpp", "seq": 2, "stage": "event_in", "type": 4, "val": 0, "xy": [512, 512], "press_type": 1, "press_xy": [512, 512], "check_drag": 1, "check_click": 0, "drag_handled": 0, "xr_modal_ops": "", "gz_highlight": "", "gz_modal": ""}
+{"src": "cpp", "seq": 2, "stage": "modal_done", "action": 0}
+{"src": "cpp", "seq": 2, "stage": "event_out", "region_handlers": 1, "action": 0, "check_drag": 1, "check_click": 1, "drag_handled": 0, "gz_highlight": "", "gz_modal": ""}
+{"src": "cpp", "seq": 3, "stage": "event_in", "type": 4, "val": 0, "xy": [512, 512], "press_type": 1, "press_xy": [512, 512], "check_drag": 1, "check_click": 0, "drag_handled": 0, "xr_modal_ops": "", "gz_highlight": "", "gz_modal": ""}
+{"src": "cpp", "seq": 3, "stage": "modal_done", "action": 0}
+{"src": "cpp", "seq": 3, "stage": "event_out", "region_handlers": 1, "action": 0, "check_drag": 1, "check_click": 1, "drag_handled": 0, "gz_highlight": "", "gz_modal": ""}
+{"src": "cpp", "seq": 4, "stage": "event_in", "type": 4, "val": 0, "xy": [512, 512], "press_type": 1, "press_xy": [512, 512], "check_drag": 1, "check_click": 0, "drag_handled": 0, "xr_modal_ops": "", "gz_highlight": "", "gz_modal": ""}
+{"src": "cpp", "seq": 4, "stage": "modal_done", "action": 0}
+{"src": "cpp", "seq": 4, "stage": "event_out", "region_handlers": 1, "action": 0, "check_drag": 1, "check_click": 1, "drag_handled": 0, "gz_highlight": "", "gz_modal": ""}
+{"src": "cpp", "seq": 5, "stage": "event_in", "type": 4, "val": 0, "xy": [512, 512], "press_type": 1, "press_xy": [512, 512], "check_drag": 1, "check_click": 0, "drag_handled": 0, "xr_modal_ops": "", "gz_highlight": "", "gz_modal": ""}
+{"src": "cpp", "seq": 5, "stage": "modal_done", "action": 0}
+{"src": "cpp", "seq": 5, "stage": "event_out", "region_handlers": 1, "action": 0, "check_drag": 1, "check_click": 1, "drag_handled": 0, "gz_highlight": "", "gz_modal": ""}
+{"src": "cpp", "seq": 7, "stage": "event_in", "type": 1, "val": 2, "xy": [512, 512], "press_type": 1, "press_xy": [512, 512], "check_drag": 1, "check_click": 0, "drag_handled": 0, "xr_modal_ops": "", "gz_highlight": "", "gz_modal": ""}
+{"src": "cpp", "seq": 7, "stage": "modal_done", "action": 0}
+{"src": "cpp", "seq": 7, "stage": "event_out", "region_handlers": 1, "action": 0, "check_drag": 1, "check_click": 1, "drag_handled": 0, "gz_highlight": "", "gz_modal": ""}
