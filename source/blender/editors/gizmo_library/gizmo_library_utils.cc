@@ -262,31 +262,45 @@ wmGizmo *gizmo_find_from_properties(const IDProperty *properties,
 {
   /* Based on #rna_GizmoProperties_find_operator. */
 
-  for (bScreen *screen = static_cast<bScreen *>(G_MAIN->screens.first); screen;
-       screen = static_cast<bScreen *>(screen->id.next))
-  {
-    for (ScrArea &area : screen->areabase) {
-      if (!ELEM(spacetype, SPACE_TYPE_ANY, area.spacetype)) {
+  auto search_area = [&](ScrArea &area) -> wmGizmo * {
+    if (!ELEM(spacetype, SPACE_TYPE_ANY, area.spacetype)) {
+      return nullptr;
+    }
+    for (ARegion &region : area.regionbase) {
+      if (region.runtime->gizmo_map == nullptr) {
         continue;
       }
-      for (ARegion &region : area.regionbase) {
-        if (region.runtime->gizmo_map == nullptr) {
-          continue;
-        }
-        if (!ELEM(regionid, RGN_TYPE_ANY, region.regiontype)) {
-          continue;
-        }
+      if (!ELEM(regionid, RGN_TYPE_ANY, region.regiontype)) {
+        continue;
+      }
 
-        for (wmGizmoGroup &gzgroup : *WM_gizmomap_group_list(region.runtime->gizmo_map)) {
-          for (wmGizmo &gz : gzgroup.gizmos) {
-            if (gz.properties == properties) {
-              return &gz;
-            }
+      for (wmGizmoGroup &gzgroup : *WM_gizmomap_group_list(region.runtime->gizmo_map)) {
+        for (wmGizmo &gz : gzgroup.gizmos) {
+          if (gz.properties == properties) {
+            return &gz;
           }
         }
       }
     }
+    return nullptr;
+  };
+
+  for (bScreen *screen = static_cast<bScreen *>(G_MAIN->screens.first); screen;
+       screen = static_cast<bScreen *>(screen->id.next))
+  {
+    for (ScrArea &area : screen->areabase) {
+      if (wmGizmo *gz = search_area(area)) {
+        return gz;
+      }
+    }
   }
+
+  for (ScrArea *area : BKE_screen_offscreen_areas_get()) {
+    if (wmGizmo *gz = search_area(*area)) {
+      return gz;
+    }
+  }
+
   return nullptr;
 }
 

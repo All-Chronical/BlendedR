@@ -77,6 +77,7 @@
 #include "UI_view2d.hh"
 
 #include "WM_api.hh"
+#include "gizmo/WM_gizmo_api.hh"
 
 #include "DRW_render.hh"
 #include "draw_cache.hh"
@@ -1407,6 +1408,27 @@ static void drw_callbacks_post_scene_xr_surface(DRWContext &draw_ctx)
   GPU_matrix_projection_set(rv3d->winmat);
   GPU_matrix_set(rv3d->viewmat);
 
+  /* Apply state for callbacks. */
+  GPU_depth_test(GPU_DEPTH_NONE);
+  GPU_apply_state();
+
+  /* 1. Modal transform line guides (axis constraint lines e.g. G -> X, snapping lines,
+   * measurements, and operator draw callbacks). Render from host_region if active so
+   * transform guides immediately replicate 2D desktop state into VR in true stereo! */
+  const wmWindowManager *wm = CTX_wm_manager(draw_ctx.evil_C);
+  const ScrArea *host_area = wm ? ED_view3d_xr_host_area_get(wm) : nullptr;
+  ARegion *host_region = nullptr;
+  if (host_area) {
+    host_region = BKE_area_find_region_type(const_cast<ScrArea *>(host_area), RGN_TYPE_WINDOW);
+  }
+  ARegion *callback_region = host_region ? host_region : region;
+  ED_region_draw_cb_draw(draw_ctx.evil_C, callback_region, REGION_DRAW_POST_VIEW);
+  if (callback_region != region) {
+    ED_region_draw_cb_draw(draw_ctx.evil_C, region, REGION_DRAW_POST_VIEW);
+  }
+
+  draw::command::StateSet::set();
+
   if (((v3d->flag2 & V3D_XR_SHOW_CONTROLLERS) != 0) ||
       ((v3d->flag2 & V3D_XR_SHOW_CUSTOM_OVERLAYS) != 0))
   {
@@ -1416,6 +1438,30 @@ static void drw_callbacks_post_scene_xr_surface(DRWContext &draw_ctx)
     drw_callbacks_xr(draw_ctx, REGION_DRAW_POST_VIEW);
 
     draw::command::StateSet::set();
+  }
+
+  /* 3. Draw 3D transform and context gizmos in XR surface. If desktop has an active
+   * modal gizmo tweak, draw desktop's gizmo map so the laser view sees 1:1 replication
+   * of the dragged handle. Otherwise draw xr_region's gizmo map for XR pointer interactions. */
+  if (v3d && ((v3d->gizmo_flag & V3D_GIZMO_HIDE) == 0)) {
+    ARegion *gizmo_region = region;
+    if (host_region && host_region->runtime && host_region->runtime->gizmo_map &&
+        WM_gizmomap_get_modal(host_region->runtime->gizmo_map) != nullptr)
+    {
+      gizmo_region = host_region;
+    }
+    if (gizmo_region && gizmo_region->runtime && gizmo_region->runtime->gizmo_map) {
+      /* Gizmos must never be occluded by scene geometry (the desktop view draws them over
+       * the scene too), so drop the scene depth rather than relying on depth test state. */
+      GPU_framebuffer_bind(dfbl->overlay_fb);
+      GPU_clear_depth(1.0f);
+      GPU_depth_test(GPU_DEPTH_NONE);
+      GPU_apply_state();
+
+      DRW_draw_gizmo_3d(draw_ctx.evil_C, gizmo_region);
+
+      draw::command::StateSet::set();
+    }
   }
 
   GPU_depth_test(GPU_DEPTH_LESS_EQUAL);

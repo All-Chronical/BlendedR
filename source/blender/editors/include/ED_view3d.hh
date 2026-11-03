@@ -32,7 +32,9 @@ struct Camera;
 struct CustomData_MeshMasks;
 struct Depsgraph;
 struct EditBone;
+struct GPUOffScreen;
 struct GPUSelectBuffer;
+struct GPUViewport;
 struct ID;
 struct Main;
 struct MetaElem;
@@ -1458,6 +1460,23 @@ void ED_view3d_xr_shading_update(wmWindowManager *wm, const View3D *v3d, const S
 bool ED_view3d_is_region_xr_mirror_active(const wmWindowManager *wm,
                                           const View3D *v3d,
                                           const ARegion *region);
+const ScrArea *ED_view3d_xr_host_area_get(const wmWindowManager *wm);
+void ED_view3d_xr_sync_presentation(View3D *target_v3d, const View3D *source_v3d);
+void ED_view3d_draw_offscreen_xr(Depsgraph *depsgraph,
+                                 Scene *scene,
+                                 View3D *v3d,
+                                 ARegion *region,
+                                 bContext *context,
+                                 int winx,
+                                 int winy,
+                                 const float viewmat[4][4],
+                                 const float winmat[4][4],
+                                 float clip_start,
+                                 float clip_end,
+                                 float xr_vignette_aperture,
+                                 uint display_flags,
+                                 GPUOffScreen *ofs,
+                                 GPUViewport *viewport);
 #endif
 
 }  // namespace blender

@@ -22,8 +22,12 @@
 #include "BLI_string.h"
 
 #include "BKE_context.hh"
+#include "BKE_global.hh"
+#include "BKE_main.hh"
 #include "BKE_scene.hh"
+#include "BKE_screen.hh"
 
+#include "ED_view3d.hh"
 #include "ED_view3d_offscreen.hh"
 
 #include "GHOST_Xr-api.hh"
@@ -37,6 +41,7 @@
 #include "UI_resources.hh"
 
 #include "WM_api.hh"
+#include "WM_gizmo_api.hh"
 
 #include "wm_xr_intern.hh"
 
@@ -187,35 +192,99 @@ void wm_xr_draw_view(const GHOST_XrDrawViewInfo *draw_view, void *customdata)
    * #do_depsgraph callback. Thus, obtain the depsgraph directly without evaluating it. */
   Depsgraph *depsgraph = CTX_data_depsgraph_pointer(xr_context);
 
+  ScrArea *offscreen_area = xr_data->runtime ? xr_data->runtime->offscreen_area : nullptr;
+  View3D *xr_v3d = offscreen_area ? static_cast<View3D *>(offscreen_area->spacedata.first) :
+                                    nullptr;
+  ARegion *xr_region = offscreen_area ?
+                           BKE_area_find_region_type(offscreen_area, RGN_TYPE_WINDOW) :
+                           nullptr;
+
   if (draw_view->view_idx == 0) {
     /* Only render location scouting viewfinder on first eye draw. */
     wm_xr_viewfinder_render_view(xr_data);
+
+    /* Render parity bridge: synchronize host View3D presentation and transform state to the
+     * XR offscreen View3D on first eye draw. */
+    if (xr_v3d) {
+      Main *bmain = G_MAIN;
+      wmWindowManager *wm = static_cast<wmWindowManager *>(bmain->wm.first);
+      const ScrArea *host_area = ED_view3d_xr_host_area_get(wm);
+      if (host_area) {
+        offscreen_area->runtime.tool = host_area->runtime.tool;
+        const View3D *host_v3d = static_cast<const View3D *>(host_area->spacedata.first);
+        ED_view3d_xr_sync_presentation(xr_v3d, host_v3d);
+
+        const ARegion *host_region = BKE_area_find_region_type(const_cast<ScrArea *>(host_area),
+                                                               RGN_TYPE_WINDOW);
+        if (host_region && host_region->regiondata && xr_region && xr_region->regiondata) {
+          const RegionView3D *host_rv3d = static_cast<const RegionView3D *>(
+              host_region->regiondata);
+          RegionView3D *xr_rv3d = static_cast<RegionView3D *>(xr_region->regiondata);
+          const bool xr_is_modal = xr_region->runtime && xr_region->runtime->gizmo_map &&
+                                   (WM_gizmomap_get_modal(xr_region->runtime->gizmo_map) != nullptr);
+          if (xr_is_modal) {
+            copy_m4_m4(const_cast<RegionView3D *>(host_rv3d)->twmat, xr_rv3d->twmat);
+            const_cast<RegionView3D *>(host_rv3d)->twdrawflag = xr_rv3d->twdrawflag;
+          }
+          else {
+            copy_m4_m4(xr_rv3d->twmat, host_rv3d->twmat);
+            xr_rv3d->twdrawflag = host_rv3d->twdrawflag;
+          }
+        }
+
+        if (xr_region && xr_region->runtime && xr_region->runtime->gizmo_map) {
+          WM_gizmomap_tag_refresh(xr_region->runtime->gizmo_map);
+        }
+      }
+      else {
+        ED_view3d_xr_sync_presentation(xr_v3d, nullptr);
+      }
+    }
   }
 
   /* Draws the view into the surface_data->viewport's frame-buffers. */
-  ED_view3d_draw_offscreen_simple(depsgraph,
-                                  scene,
-                                  &settings->shading,
-                                  xr_context,
-                                  eDrawType(settings->shading.type),
-                                  settings->object_type_exclude_viewport,
-                                  settings->object_type_exclude_select,
-                                  draw_view->width,
-                                  draw_view->height,
-                                  display_flags,
-                                  viewmat,
-                                  winmat,
-                                  settings->clip_start,
-                                  settings->clip_end,
-                                  session_state->vignette_aperture,
-                                  true,
-                                  false,
-                                  true,
-                                  nullptr,
-                                  false,
-                                  nullptr,
-                                  vp->offscreen,
-                                  vp->viewport);
+  if (xr_v3d && xr_region) {
+    ED_view3d_draw_offscreen_xr(depsgraph,
+                                scene,
+                                xr_v3d,
+                                xr_region,
+                                xr_context,
+                                draw_view->width,
+                                draw_view->height,
+                                viewmat,
+                                winmat,
+                                settings->clip_start,
+                                settings->clip_end,
+                                session_state->vignette_aperture,
+                                display_flags,
+                                vp->offscreen,
+                                vp->viewport);
+  }
+  else {
+    ED_view3d_draw_offscreen_simple(depsgraph,
+                                    scene,
+                                    &settings->shading,
+                                    xr_context,
+                                    eDrawType(settings->shading.type),
+                                    settings->object_type_exclude_viewport,
+                                    settings->object_type_exclude_select,
+                                    draw_view->width,
+                                    draw_view->height,
+                                    display_flags,
+                                    viewmat,
+                                    winmat,
+                                    settings->clip_start,
+                                    settings->clip_end,
+                                    session_state->vignette_aperture,
+                                    true,
+                                    false,
+                                    true,
+                                    nullptr,
+                                    false,
+                                    nullptr,
+                                    vp->offscreen,
+                                    vp->viewport);
+  }
 
   /* The draw-manager uses both GPUOffscreen and GPUViewport to manage frame and texture buffers. A
    * call to GPU_viewport_draw_to_screen() is still needed to get the final result from the

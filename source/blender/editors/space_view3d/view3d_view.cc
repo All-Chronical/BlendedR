@@ -19,6 +19,8 @@
 #include "BKE_context.hh"
 #ifdef WITH_XR_OPENXR
 #  include "BKE_idprop.hh"
+#  include "BKE_screen.hh"
+#  include "BKE_workspace.hh"
 #endif
 #include "BKE_global.hh"
 #include "BKE_layer.hh"
@@ -1481,6 +1483,116 @@ bool ED_view3d_is_region_xr_mirror_active(const wmWindowManager *wm,
           * the last in the list base. We don't want any other to be affected. */
          !region->next &&  //
          WM_xr_session_is_ready(&wm->xr);
+}
+
+const ScrArea *ED_view3d_xr_host_area_get(const wmWindowManager *wm)
+{
+  if (wm == nullptr) {
+    return nullptr;
+  }
+
+  /* 1. Try View3D marked as session root. */
+  for (const wmWindow &win : wm->windows) {
+    const bScreen *screen = BKE_workspace_active_screen_get(win.workspace_hook);
+    if (!screen) {
+      continue;
+    }
+    for (const ScrArea &area : screen->areabase) {
+      if (area.spacetype == SPACE_VIEW3D) {
+        const View3D *v3d = static_cast<const View3D *>(area.spacedata.first);
+        if (v3d && (v3d->runtime.flag & V3D_RUNTIME_XR_SESSION_ROOT) &&
+            !(v3d->flag & V3D_XR_SESSION_MIRROR))
+        {
+          return &area;
+        }
+      }
+    }
+  }
+
+  /* 2. Fallback: first non-mirror View3D in any window. */
+  for (const wmWindow &win : wm->windows) {
+    const bScreen *screen = BKE_workspace_active_screen_get(win.workspace_hook);
+    if (!screen) {
+      continue;
+    }
+    for (const ScrArea &area : screen->areabase) {
+      if (area.spacetype == SPACE_VIEW3D) {
+        const View3D *v3d = static_cast<const View3D *>(area.spacedata.first);
+        if (v3d && !(v3d->flag & V3D_XR_SESSION_MIRROR)) {
+          return &area;
+        }
+      }
+    }
+  }
+
+  return nullptr;
+}
+
+void ED_view3d_xr_sync_presentation(View3D *target_v3d, const View3D *source_v3d)
+{
+  if (!target_v3d) {
+    return;
+  }
+
+  if (!source_v3d) {
+    target_v3d->gizmo_flag |= (V3D_GIZMO_HIDE | V3D_GIZMO_HIDE_NAVIGATE);
+    return;
+  }
+
+  /* Shading */
+  if (target_v3d->shading.prop) {
+    IDP_FreeProperty(target_v3d->shading.prop);
+    target_v3d->shading.prop = nullptr;
+  }
+  const eView3DShading_Flag old_target_shading_flag = target_v3d->shading.flag;
+  target_v3d->shading = source_v3d->shading;
+  if (source_v3d->shading.type != OB_SOLID) {
+    target_v3d->shading.flag = (target_v3d->shading.flag & ~V3D_SHADING_WORLD_ORIENTATION) |
+                               (old_target_shading_flag & V3D_SHADING_WORLD_ORIENTATION);
+  }
+  if (source_v3d->shading.prop) {
+    target_v3d->shading.prop = IDP_CopyProperty(source_v3d->shading.prop);
+  }
+
+  /* Overlay */
+  target_v3d->overlay = source_v3d->overlay;
+
+  /* Gizmo settings: faithfully replicate from host view, suppressing only 2D navigate cube in VR. */
+  target_v3d->gizmo_flag = source_v3d->gizmo_flag | V3D_GIZMO_HIDE_NAVIGATE;
+
+  target_v3d->gizmo_show_object = source_v3d->gizmo_show_object;
+  target_v3d->gizmo_show_armature = source_v3d->gizmo_show_armature;
+  target_v3d->gizmo_show_empty = source_v3d->gizmo_show_empty;
+  target_v3d->gizmo_show_light = source_v3d->gizmo_show_light;
+  target_v3d->gizmo_show_camera = source_v3d->gizmo_show_camera;
+
+  /* Grid */
+  target_v3d->gridflag = source_v3d->gridflag;
+  target_v3d->grid = source_v3d->grid;
+  target_v3d->gridlines = source_v3d->gridlines;
+  target_v3d->gridsubdiv = source_v3d->gridsubdiv;
+
+  /* Presentation flags in flag and flag2 */
+  const eView3D_Flag keep_flag = eView3D_Flag(V3D_XR_SESSION_SURFACE | V3D_LOCAL_COLLECTIONS);
+  const eView3D_Flag copy_flag = eView3D_Flag(V3D_SELECT_OUTLINE | V3D_HIDE_HELPLINES);
+  target_v3d->flag = (target_v3d->flag & keep_flag) | (source_v3d->flag & copy_flag);
+
+  const eView3D_Flag2 keep_flag2 = eView3D_Flag2(
+      V3D_XR_SHOW_CONTROLLERS | V3D_XR_SHOW_CUSTOM_OVERLAYS | V3D_XR_SHOW_PASSTHROUGH);
+  const eView3D_Flag2 copy_flag2 = eView3D_Flag2(
+      V3D_HIDE_OVERLAYS | V3D_SHOW_ANNOTATION | V3D_SHOW_RECONSTRUCTION | V3D_SHOW_VIEWER |
+      V3D_SHOW_CAMERA_GUIDES | V3D_SHOW_CAMERA_PASSEPARTOUT);
+  target_v3d->flag2 = (target_v3d->flag2 & keep_flag2) | (source_v3d->flag2 & copy_flag2);
+
+  /* Object type visibility / selection overrides */
+  target_v3d->object_type_exclude_viewport = source_v3d->object_type_exclude_viewport;
+  target_v3d->object_type_exclude_select = source_v3d->object_type_exclude_select;
+
+  /* Misc presentation */
+  target_v3d->vertex_opacity = source_v3d->vertex_opacity;
+  target_v3d->gp_flag = source_v3d->gp_flag;
+  target_v3d->bundle_size = source_v3d->bundle_size;
+  target_v3d->bundle_drawtype = source_v3d->bundle_drawtype;
 }
 
 #endif

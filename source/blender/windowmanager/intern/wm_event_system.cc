@@ -10,6 +10,8 @@
  * Also some operator reports utility functions.
  */
 
+#include <cstdarg>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fmt/format.h>
@@ -90,7 +92,70 @@
 
 #ifdef WITH_XR_OPENXR
 #  include "wm_xr.hh"
+#  include "../xr/intern/wm_xr_intern.hh"
 #endif
+
+#ifdef WITH_XR_OPENXR
+/* -------------------------------------------------------------------- */
+/** 
+ame XR Pointer Pipeline Trace
+ *
+ * Opt-in JSONL flight recorder for the XR mouse dispatch. Enabled by setting the environment
+ * variable `BLENDEDR_XR_TRACE` to a file path. Each stage of an XR pointer event is recorded so a
+ * failed interaction can be attributed to a specific stage (queue, modal handlers, region
+ * handlers, drag generation, gizmo state) instead of guessed at.
+ * \{ */
+
+static bool g_xr_trace_active = false;
+static int g_xr_trace_seq = 0;
+
+static FILE *wm_xr_trace_file()
+{
+  /* Looked up on every call so the add-on can start and stop capture mid-run by setting or
+   * clearing the environment variable. Each (re)start truncates the file. */
+  static FILE *file = nullptr;
+  static char open_path[1024] = "";
+  const char *path = getenv("BLENDEDR_XR_TRACE");
+  if (path == nullptr || path[0] == 0) {
+    if (file != nullptr) {
+      fclose(file);
+      file = nullptr;
+      open_path[0] = 0;
+    }
+    return nullptr;
+  }
+  if (file == nullptr || strcmp(path, open_path) != 0) {
+    if (file != nullptr) {
+      fclose(file);
+    }
+    file = fopen(path, "w");
+    snprintf(open_path, sizeof(open_path), "%s", path);
+    g_xr_trace_seq = 0;
+  }
+  return file;
+}
+
+static void wm_xr_trace(const char *stage, const char *fmt = "", ...)
+{
+  FILE *file = wm_xr_trace_file();
+  if (file == nullptr) {
+    return;
+  }
+  char detail[768];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(detail, sizeof(detail), fmt, args);
+  va_end(args);
+  fprintf(file, "{\"src\":\"cpp\",\"seq\":%d,\"stage\":\"%s\"%s%s}\n",
+          g_xr_trace_seq,
+          stage,
+          detail[0] ? "," : "",
+          detail);
+  fflush(file);
+}
+
+/** \} */
+#endif /* WITH_XR_OPENXR */
 
 #include "DEG_depsgraph.hh"
 #include "DEG_depsgraph_query.hh"
@@ -2310,7 +2375,31 @@ static void wm_handler_op_context(bContext *C, wmEventHandler_Op *handler, const
 
 void WM_event_remove_handlers(bContext *C, ListBaseT<wmEventHandler> *handlers)
 {
-  wmWindowManager *wm = CTX_wm_manager(C);
+  wmWindowManager *wm = C ? CTX_wm_manager(C) : nullptr;
+  if (wm == nullptr && G_MAIN && G_MAIN->wm.first) {
+    wm = static_cast<wmWindowManager *>(G_MAIN->wm.first);
+  }
+
+  bContext *C_local = C;
+  bool free_C = false;
+  if (C_local == nullptr && G_MAIN && G_MAIN->wm.first) {
+    wmWindow *win = wm ? static_cast<wmWindow *>(wm->windows.first) : nullptr;
+    C_local = CTX_create();
+    CTX_data_main_set(C_local, G_MAIN);
+    if (wm) {
+      CTX_wm_manager_set(C_local, wm);
+    }
+    if (win) {
+      CTX_wm_window_set(C_local, win);
+      if (bScreen *screen = WM_window_get_active_screen(win)) {
+        CTX_wm_screen_set(C_local, screen);
+      }
+      if (Scene *scene = WM_window_get_active_scene(win)) {
+        CTX_data_scene_set(C_local, scene);
+      }
+    }
+    free_C = true;
+  }
 
   /* C is zero on freeing database, modal handlers then already were freed. */
   while (wmEventHandler *handler_base = static_cast<wmEventHandler *>(BLI_pophead(handlers))) {
@@ -2319,40 +2408,43 @@ void WM_event_remove_handlers(bContext *C, ListBaseT<wmEventHandler> *handlers)
       wmEventHandler_Op *handler = reinterpret_cast<wmEventHandler_Op *>(handler_base);
 
       if (handler->op) {
-        wmWindow *win = CTX_wm_window(C);
+        wmWindow *win = C_local ? CTX_wm_window(C_local) :
+                                  static_cast<wmWindow *>(wm ? wm->windows.first : nullptr);
 
-        if (handler->is_fileselect) {
+        if (C_local && handler->is_fileselect) {
           /* Exit File Browsers referring to this handler/operator. */
           for (wmWindow &temp_win : wm->windows) {
             ScrArea *file_area = ED_fileselect_handler_area_find(&temp_win, handler->op);
             if (!file_area) {
               continue;
             }
-            ED_area_exit(C, file_area);
+            ED_area_exit(C_local, file_area);
           }
         }
 
-        if (handler->op->type->cancel) {
-          ScrArea *area = CTX_wm_area(C);
-          ARegion *region = CTX_wm_region(C);
+        if (C_local && handler->op->type && handler->op->type->cancel) {
+          ScrArea *area = CTX_wm_area(C_local);
+          ARegion *region = CTX_wm_region(C_local);
 
-          wm_handler_op_context(C, handler, win->runtime->eventstate);
+          wm_handler_op_context(C_local, handler, win ? win->runtime->eventstate : nullptr);
 
           if (handler->op->type->flag & OPTYPE_UNDO) {
             wm->op_undo_depth++;
           }
 
-          handler->op->type->cancel(C, handler->op);
+          handler->op->type->cancel(C_local, handler->op);
 
           if (handler->op->type->flag & OPTYPE_UNDO) {
             wm->op_undo_depth--;
           }
 
-          CTX_wm_area_set(C, area);
-          CTX_wm_region_set(C, region);
+          CTX_wm_area_set(C_local, area);
+          CTX_wm_region_set(C_local, region);
         }
 
-        WM_cursor_grab_disable(win, nullptr);
+        if (win) {
+          WM_cursor_grab_disable(win, nullptr);
+        }
 
         if (handler->is_fileselect) {
           wm_operator_free_for_fileselect(handler->op);
@@ -2365,23 +2457,23 @@ void WM_event_remove_handlers(bContext *C, ListBaseT<wmEventHandler> *handlers)
     else if (handler_base->type == WM_HANDLER_TYPE_UI) {
       wmEventHandler_UI *handler = reinterpret_cast<wmEventHandler_UI *>(handler_base);
 
-      if (handler->remove_fn) {
-        ScrArea *area_prev = CTX_wm_area(C);
-        ARegion *region_prev = CTX_wm_region(C);
-        ARegion *region_popup_prev = CTX_wm_region_popup(C);
+      if (handler->remove_fn && C_local) {
+        ScrArea *area_prev = CTX_wm_area(C_local);
+        ARegion *region_prev = CTX_wm_region(C_local);
+        ARegion *region_popup_prev = CTX_wm_region_popup(C_local);
 
         if (handler->context.area) {
-          CTX_wm_area_set(C, handler->context.area);
+          CTX_wm_area_set(C_local, handler->context.area);
         }
         if (handler->context.region) {
-          CTX_wm_region_set(C, handler->context.region);
+          CTX_wm_region_set(C_local, handler->context.region);
         }
         if (handler->context.region_popup) {
           BLI_assert(screen_temp_region_exists(handler->context.region_popup));
-          CTX_wm_region_popup_set(C, handler->context.region_popup);
+          CTX_wm_region_popup_set(C_local, handler->context.region_popup);
         }
 
-        handler->remove_fn(C, handler->user_data);
+        handler->remove_fn(C_local, handler->user_data);
 
         /* Currently we don't have a practical way to check if this region
          * was a temporary region created by `handler`, so do a full lookup. */
@@ -2389,13 +2481,17 @@ void WM_event_remove_handlers(bContext *C, ListBaseT<wmEventHandler> *handlers)
           region_popup_prev = nullptr;
         }
 
-        CTX_wm_area_set(C, area_prev);
-        CTX_wm_region_set(C, region_prev);
-        CTX_wm_region_popup_set(C, region_popup_prev);
+        CTX_wm_area_set(C_local, area_prev);
+        CTX_wm_region_set(C_local, region_prev);
+        CTX_wm_region_popup_set(C_local, region_popup_prev);
       }
     }
 
     wm_event_free_handler(handler_base);
+  }
+
+  if (free_C && C_local) {
+    CTX_free(C_local);
   }
 }
 
@@ -3357,7 +3453,10 @@ static eHandlerActionFlag wm_handlers_do_gizmo_handler(bContext *C,
   }
 
   if (prev.gz_modal == nullptr) {
-    if (handle_highlight == false && wm_gizmomap_highlight_pending(gzmap)) {
+    if (handle_highlight == false &&
+        (wm_gizmomap_highlight_pending(gzmap) ||
+         (gz == nullptr && event->val == KM_PRESS && ISMOUSE_BUTTON(event->type))))
+    {
       handle_highlight = true;
     }
   }
@@ -3736,6 +3835,20 @@ static eHandlerActionFlag wm_handlers_do(bContext *C,
           CLOG_DEBUG(WM_LOG_EVENTS, "Handling CLICK_DRAG");
 
           action |= wm_handlers_do_intern(C, win, event, handlers);
+#ifdef WITH_XR_OPENXR
+          if (g_xr_trace_active) {
+            wm_xr_trace("drag_generated",
+                        "\"press_type\":%d,\"direction\":%d,\"action\":%d,\"xy\":[%d,%d],"
+                        "\"press_xy\":[%d,%d]",
+                        int(event->prev_press_type),
+                        direction,
+                        int(action),
+                        event->xy[0],
+                        event->xy[1],
+                        event->prev_press_xy[0],
+                        event->prev_press_xy[1]);
+          }
+#endif
 
           event->direction = 0;
           event->keymodifier = prev_keymodifier;
@@ -4233,6 +4346,8 @@ static eHandlerActionFlag wm_event_do_handlers_area_regions(bContext *C,
 }
 
 #ifdef WITH_XR_OPENXR
+#  include "wm_xr.hh"
+
 /** Handle a mouse event queued for the XR-only offscreen viewport. */
 static void wm_event_handle_xr_mouse_event(wmWindowManager *wm,
                                            wmWindow *win,
@@ -4259,17 +4374,82 @@ static void wm_event_handle_xr_mouse_event(wmWindowManager *wm,
   wm_region_mouse_co(xr_context, input_event);
 
   const bool is_button_event = ISMOUSE_BUTTON(input_event->type);
-  if (is_button_event) {
+
+  /* Swap in XR's drag and click detection state so XR and desktop do not contaminate each other. */
+  const bool desktop_check_drag = win->event_queue_check_drag;
+  const bool desktop_check_drag_handled = win->event_queue_check_drag_handled;
+  const bool desktop_check_click = win->event_queue_check_click;
+
+  if (wm->xr.runtime != nullptr) {
+    win->event_queue_check_drag = wm->xr.runtime->event_queue_check_drag;
+    win->event_queue_check_drag_handled = wm->xr.runtime->event_queue_check_drag_handled;
+    win->event_queue_check_click = wm->xr.runtime->event_queue_check_click;
+  }
+
+  if (is_button_event || win->event_queue_check_drag) {
     /* Same as the regular event path: GPU selecting (view3d.select) and other operators need
      * an active GPU context, which the XR surface draw does not leave behind. */
     wm_window_make_drawable(wm, win);
-    /* Aim the offscreen region along the controller so GPU picking resolves the event against the
-     * laser. Only button events pick; binding the viewport for every pointer move would also run
-     * gizmo 3D intersection tests on the offscreen region each tick. */
-    wm_xr_session_pointer_pick_setup(xr_context, &wm->xr);
+    if (is_button_event) {
+      /* Aim the offscreen region along the controller so GPU picking resolves the event against the
+       * laser. Only button events pick; binding the viewport for every pointer move would also run
+       * gizmo 3D intersection tests on the offscreen region each tick and trigger GPU TDR resets. */
+      wm_xr_session_pointer_pick_setup(xr_context, &wm->xr);
+    }
   }
 
-  /* The mouse event can continue an XR navigation modal operator. Limit dispatch to operator
+#ifdef WITH_XR_OPENXR
+  g_xr_trace_active = wm_xr_trace_file() != nullptr;
+  if (g_xr_trace_active) {
+    g_xr_trace_seq++;
+    char modal_ops[256] = "";
+    for (wmEventHandler &handler_base : win->runtime->modalhandlers) {
+      if (handler_base.type == WM_HANDLER_TYPE_OP) {
+        wmEventHandler_Op *op_handler = reinterpret_cast<wmEventHandler_Op *>(&handler_base);
+        if (op_handler->context.area == xr_area && op_handler->op && op_handler->op->type) {
+          BLI_snprintf(modal_ops + strlen(modal_ops),
+                       sizeof(modal_ops) - strlen(modal_ops),
+                       "%s%s",
+                       modal_ops[0] ? "," : "",
+                       op_handler->op->type->idname);
+        }
+      }
+    }
+    wmGizmoMap *trace_gzmap = xr_region->runtime->gizmo_map;
+    const wmGizmo *trace_hl = trace_gzmap ? wm_gizmomap_highlight_get(trace_gzmap) : nullptr;
+    const wmGizmo *trace_modal = trace_gzmap ? wm_gizmomap_modal_get(trace_gzmap) : nullptr;
+    const RegionView3D *trace_rv3d = static_cast<const RegionView3D *>(xr_region->regiondata);
+    wm_xr_trace("event_in",
+                "\"type\":%d,\"val\":%d,\"xy\":[%d,%d],\"mval\":[%d,%d],"
+                "\"press_type\":%d,\"press_xy\":[%d,%d],\"check_drag\":%d,"
+                "\"check_click\":%d,\"drag_handled\":%d,\"xr_modal_ops\":\"%s\","
+                "\"gz_highlight\":\"%s\",\"gz_modal\":\"%s\",\"region_wh\":[%d,%d],"
+                "\"winrct_min\":[%d,%d],\"rv3d\":%d,\"pick_dist\":%.4f",
+                int(input_event->type),
+                int(input_event->val),
+                input_event->xy[0],
+                input_event->xy[1],
+                input_event->mval[0],
+                input_event->mval[1],
+                int(input_event->prev_press_type),
+                input_event->prev_press_xy[0],
+                input_event->prev_press_xy[1],
+                int(win->event_queue_check_drag),
+                int(win->event_queue_check_click),
+                int(win->event_queue_check_drag_handled),
+                modal_ops,
+                trace_hl ? trace_hl->type->idname : "",
+                trace_modal ? trace_modal->type->idname : "",
+                xr_region->winx,
+                xr_region->winy,
+                xr_region->winrct.xmin,
+                xr_region->winrct.ymin,
+                trace_rv3d ? 1 : 0,
+                trace_rv3d ? double(trace_rv3d->dist) : -1.0);
+  }
+#endif
+
+  /* The mouse event can continue an XR navigation or transform modal operator. Limit dispatch to operator
    * handlers that originated in the XR offscreen area so desktop modal/UI handlers do not receive
    * XR input. */
   eHandlerActionFlag action = WM_HANDLER_CONTINUE;
@@ -4296,19 +4476,62 @@ static void wm_event_handle_xr_mouse_event(wmWindowManager *wm,
     }
   }
 
-  /* Pointer moves only need to reach modal operators (XR navigation). The region/area keymap
-   * and UI handlers are limited to button events: running them for every pointer move
-   * executes UI and keymap hover code against a region that is never drawn normally. */
-  if (is_button_event && (action & WM_HANDLER_BREAK) == 0) {
+#ifdef WITH_XR_OPENXR
+  wm_xr_trace("modal_done", "\"action\":%d", int(action));
+#endif
+
+  /* Region/area keymap and handlers run for button events, and for pointer moves when drag
+   * detection is active (win->event_queue_check_drag) so that click-drag events (KM_PRESS_DRAG)
+   * can be generated for gizmos, transforms, and selection. Pure hover moves skip this to avoid
+   * redundant UI hover updates and GPU TDR resets. */
+  const bool handle_region_handlers = is_button_event || win->event_queue_check_drag;
+  if (handle_region_handlers && (action & WM_HANDLER_BREAK) == 0) {
     action |= wm_event_do_region_handlers(xr_context, input_event, xr_region);
   }
-  if (is_button_event && (action & WM_HANDLER_BREAK) == 0) {
+
+  if (handle_region_handlers && (action & WM_HANDLER_BREAK) == 0) {
     CTX_wm_region_set(xr_context, nullptr);
     wm_region_mouse_co(xr_context, input_event);
     action |= wm_handlers_do(
         xr_context, input_event, static_cast<ListBaseT<wmEventHandler> *>(&xr_area->handlers));
   }
   wm_event_handler_return_value_check(xr_context, input_event, action);
+
+#ifdef WITH_XR_OPENXR
+  if (g_xr_trace_active) {
+    wmGizmoMap *trace_gzmap = xr_region->runtime->gizmo_map;
+    const wmGizmo *trace_hl = trace_gzmap ? wm_gizmomap_highlight_get(trace_gzmap) : nullptr;
+    const wmGizmo *trace_modal = trace_gzmap ? wm_gizmomap_modal_get(trace_gzmap) : nullptr;
+    wm_xr_trace("event_out",
+                "\"region_handlers\":%d,\"action\":%d,\"check_drag\":%d,\"check_click\":%d,"
+                "\"drag_handled\":%d,\"gz_highlight\":\"%s\",\"gz_modal\":\"%s\"",
+                int(handle_region_handlers),
+                int(action),
+                int(win->event_queue_check_drag),
+                int(win->event_queue_check_click),
+                int(win->event_queue_check_drag_handled),
+                trace_hl ? trace_hl->type->idname : "",
+                trace_modal ? trace_modal->type->idname : "");
+  }
+  g_xr_trace_active = false;
+#endif
+
+  if (win->event_queue_check_drag_handled) {
+    win->event_queue_check_drag = false;
+    win->event_queue_check_drag_handled = false;
+  }
+
+  /* Save XR's drag/click state back to runtime and restore desktop window's state. */
+  if (wm->xr.runtime != nullptr) {
+    wm->xr.runtime->event_queue_check_drag = win->event_queue_check_drag;
+    wm->xr.runtime->event_queue_check_drag_handled = win->event_queue_check_drag_handled;
+    wm->xr.runtime->event_queue_check_click = win->event_queue_check_click;
+  }
+
+  /* Restore the desktop drag/click state so XR dispatch cannot trigger desktop box-select. */
+  win->event_queue_check_drag = desktop_check_drag;
+  win->event_queue_check_drag_handled = desktop_check_drag_handled;
+  win->event_queue_check_click = desktop_check_click;
 
   CTX_data_main_set(main_context, CTX_data_main(xr_context));
   if (ctx_xr_main_scene_match) {
@@ -4940,6 +5163,89 @@ void WM_event_modal_handler_area_replace(wmWindow *win, const ScrArea *old_area,
       if ((handler->context.area == old_area) && (handler->is_fileselect == false)) {
         handler->context.area = new_area;
       }
+    }
+  }
+}
+
+void WM_event_modal_handlers_cancel_by_area(bContext *C, const ScrArea *area)
+{
+  if (area == nullptr) {
+    return;
+  }
+  Main *bmain = G_MAIN;
+  if (bmain == nullptr || bmain->wm.first == nullptr) {
+    return;
+  }
+  wmWindowManager *wm = static_cast<wmWindowManager *>(bmain->wm.first);
+  for (wmWindow &win : wm->windows) {
+    bContext *C_local = C;
+    bool free_C = false;
+    if (C_local == nullptr) {
+      C_local = CTX_create();
+      CTX_data_main_set(C_local, bmain);
+      CTX_wm_manager_set(C_local, wm);
+      CTX_wm_window_set(C_local, &win);
+      if (bScreen *screen = WM_window_get_active_screen(&win)) {
+        CTX_wm_screen_set(C_local, screen);
+      }
+      if (Scene *scene = WM_window_get_active_scene(&win)) {
+        CTX_data_scene_set(C_local, scene);
+      }
+      free_C = true;
+    }
+    else {
+      if (CTX_wm_window(C_local) == nullptr) {
+        CTX_wm_window_set(C_local, &win);
+      }
+      if (CTX_data_scene(C_local) == nullptr) {
+        if (Scene *scene = WM_window_get_active_scene(&win)) {
+          CTX_data_scene_set(C_local, scene);
+        }
+      }
+    }
+
+    wmEventHandler *handler_base = static_cast<wmEventHandler *>(win.runtime->modalhandlers.first);
+    while (handler_base != nullptr) {
+      wmEventHandler *handler_next = handler_base->next;
+      if (handler_base->type == WM_HANDLER_TYPE_OP) {
+        wmEventHandler_Op *handler = reinterpret_cast<wmEventHandler_Op *>(handler_base);
+        if (handler->context.area == area) {
+          if (handler->op) {
+            if (handler->op->type && handler->op->type->cancel) {
+              ScrArea *prev_area = CTX_wm_area(C_local);
+              ARegion *prev_region = CTX_wm_region(C_local);
+
+              wmEvent event_dummy{};
+              const wmEvent *event = win.runtime->eventstate ? win.runtime->eventstate :
+                                                               &event_dummy;
+              wm_handler_op_context(C_local, handler, event);
+
+              if (handler->op->type->flag & OPTYPE_UNDO) {
+                wm->op_undo_depth++;
+              }
+
+              handler->op->type->cancel(C_local, handler->op);
+
+              if (handler->op->type->flag & OPTYPE_UNDO) {
+                wm->op_undo_depth--;
+              }
+
+              CTX_wm_area_set(C_local, prev_area);
+              CTX_wm_region_set(C_local, prev_region);
+            }
+            WM_cursor_grab_disable(&win, nullptr);
+            WM_operator_free(handler->op);
+            handler->op = nullptr;
+          }
+          BLI_remlink(&win.runtime->modalhandlers, handler);
+          wm_event_free_handler(&handler->head);
+        }
+      }
+      handler_base = handler_next;
+    }
+
+    if (free_C) {
+      CTX_free(C_local);
     }
   }
 }

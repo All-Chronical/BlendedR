@@ -62,6 +62,18 @@ bool wm_xr_init(bContext *C)
 {
   wmWindowManager *wm = CTX_wm_manager(C);
   if (wm->xr.runtime && wm->xr.runtime->ghost_context) {
+    if (!wm->xr.runtime->offscreen_area) {
+      if (!wm->xr.runtime->b_context) {
+        wm->xr.runtime->b_context = CTX_create();
+        CTX_wm_manager_set(wm->xr.runtime->b_context, CTX_wm_manager(C));
+        CTX_data_main_set(wm->xr.runtime->b_context, CTX_data_main(C));
+      }
+      wm->xr.runtime->offscreen_area = ED_area_offscreen_create(CTX_wm_window(C), SPACE_VIEW3D);
+      ED_area_offscreen_handlers_init(wm, wm->xr.runtime->offscreen_area);
+      ED_area_offscreen_region_size_set(
+          wm->xr.runtime->offscreen_area, XR_POINTER_REGION_SIZE, XR_POINTER_REGION_SIZE);
+      WM_xr_session_context_ensure(&wm->xr, wm);
+    }
     return true;
   }
   static wmXrErrorHandlerData error_customdata;
@@ -194,10 +206,57 @@ wmXrRuntimeData *wm_xr_runtime_data_create()
   return runtime;
 }
 
+void wm_xr_session_data_cleanup(wmXrData *xr_data)
+{
+  if (!xr_data || !xr_data->runtime) {
+    return;
+  }
+
+  ScrArea *xr_offscreen_area = xr_data->runtime->offscreen_area;
+  wmWindowManager *wm = static_cast<wmWindowManager *>(G_MAIN->wm.first);
+  wmWindow *xr_win = wm_xr_session_root_window_or_fallback_get(wm, xr_data->runtime);
+
+  if (xr_offscreen_area != nullptr) {
+    WM_event_modal_handlers_cancel_by_area(xr_data->runtime->b_context, xr_offscreen_area);
+    if (xr_win != nullptr) {
+      WM_event_remove_handlers_by_area(&xr_win->runtime->handlers, xr_offscreen_area);
+      ED_area_offscreen_free(wm, xr_win, xr_offscreen_area);
+    }
+    xr_data->runtime->offscreen_area = nullptr;
+  }
+
+  if (xr_data->runtime->b_context != nullptr) {
+    CTX_free(xr_data->runtime->b_context);
+    xr_data->runtime->b_context = nullptr;
+  }
+
+  xr_data->runtime->event_queue_check_click = false;
+  xr_data->runtime->event_queue_check_drag = false;
+  xr_data->runtime->event_queue_check_drag_handled = false;
+  memset(xr_data->runtime->mouse_button_press_type,
+         0,
+         sizeof(xr_data->runtime->mouse_button_press_type));
+  memset(
+      xr_data->runtime->mouse_button_press_xy, 0, sizeof(xr_data->runtime->mouse_button_press_xy));
+  memset(xr_data->runtime->mouse_button_press_modifier,
+         0,
+         sizeof(xr_data->runtime->mouse_button_press_modifier));
+
+  wm_xr_session_data_free(&xr_data->runtime->session_state);
+  WM_xr_actionmaps_clear(xr_data->runtime);
+}
+
 void wm_xr_runtime_data_free(wmXrRuntimeData **runtime)
 {
-  /* This function may be called recursively via the #GHOST_XrContextDestroy session exit callback.
-   * Guard against double-free by nulling pointers after freeing. */
+  if (*runtime == nullptr) {
+    return;
+  }
+
+  wmWindowManager *wm = static_cast<wmWindowManager *>(G_MAIN->wm.first);
+  wmXrData *xr_data = wm ? &wm->xr : nullptr;
+  if (xr_data && xr_data->runtime == *runtime) {
+    wm_xr_session_data_cleanup(xr_data);
+  }
 
   /* Destroy context if still alive. */
   if ((*runtime)->ghost_context != nullptr) {
@@ -208,24 +267,8 @@ void wm_xr_runtime_data_free(wmXrRuntimeData **runtime)
     GHOST_XrContextDestroy(ghost_context);
   }
 
-  /* Free remaining runtime data. */
-  if (*runtime != nullptr) {
-    ScrArea *xr_offscreen_area = (*runtime)->offscreen_area;
-    BLI_assert(xr_offscreen_area);
-
-    wmWindowManager *wm = static_cast<wmWindowManager *>(G_MAIN->wm.first);
-    wmWindow *xr_win = wm_xr_session_root_window_or_fallback_get(wm, (*runtime));
-    WM_event_remove_handlers_by_area(&xr_win->runtime->handlers, xr_offscreen_area);
-    ED_area_offscreen_free(wm, xr_win, xr_offscreen_area);
-
-    CTX_free((*runtime)->b_context);
-
-    wm_xr_session_data_free(&(*runtime)->session_state);
-    WM_xr_actionmaps_clear(*runtime);
-
-    MEM_SAFE_DELETE(*runtime);
-    *runtime = nullptr;
-  }
+  MEM_SAFE_DELETE(*runtime);
+  *runtime = nullptr;
 }
 
 /** \} */ /* XR Runtime Data. */

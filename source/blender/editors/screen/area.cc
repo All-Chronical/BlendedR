@@ -2370,10 +2370,8 @@ void ED_area_offscreen_handlers_init(wmWindowManager *wm, ScrArea *area)
       continue;
     }
     BLI_assert(region.runtime->type != nullptr);
-    /* Gizmo maps are skipped: the offscreen region is never drawn through the normal region
-     * draw path, so gizmo groups are never created for it, and pointer-move events would run
-     * gizmo refresh/highlight code against a half-initialized region. */
-    const int keymapflag = region.runtime->type->keymapflag & ~ED_KEYMAP_GIZMO;
+    /* Initialize gizmo map and handlers so 3D gizmos can be drawn and interacted with in XR. */
+    const int keymapflag = region.runtime->type->keymapflag;
     ed_default_handlers(wm, area, &region, &region.runtime->handlers, keymapflag);
     if (region.runtime->type->init) {
       region.runtime->type->init(wm, &region);
@@ -2409,6 +2407,8 @@ ScrArea *ED_area_offscreen_create(wmWindow *win, eSpace_Type space_type)
   screen_area_spacelink_add(WM_window_get_active_scene(win), area, space_type);
   area_offscreen_init(area);
 
+  BKE_screen_offscreen_area_register(area);
+
   return area;
 }
 
@@ -2423,6 +2423,7 @@ static void area_offscreen_exit(wmWindowManager *wm, wmWindow *win, ScrArea *are
       region.runtime->type->exit(wm, &region);
     }
 
+    WM_event_remove_handlers(nullptr, &region.runtime->handlers);
     WM_event_modal_handler_region_replace(win, &region, nullptr);
     WM_draw_region_free(&region);
     region.runtime->visible = false;
@@ -2439,6 +2440,8 @@ static void area_offscreen_exit(wmWindowManager *wm, wmWindow *win, ScrArea *are
     }
   }
 
+  WM_event_remove_handlers(nullptr, &area->handlers);
+  WM_event_modal_handlers_cancel_by_area(nullptr, area);
   WM_event_modal_handler_area_replace(win, area, nullptr);
 }
 

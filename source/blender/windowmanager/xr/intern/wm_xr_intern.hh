@@ -156,6 +156,9 @@ struct wmXrRuntimeData {
   int mouse_button_press_type[3];
   int mouse_button_press_xy[3][2];
   int mouse_button_press_modifier[3];
+  bool event_queue_check_click;
+  bool event_queue_check_drag;
+  bool event_queue_check_drag_handled;
   short actactionmap;
   short selactionmap;
 };
@@ -268,6 +271,7 @@ struct wmXrActionSet {
 
 wmXrRuntimeData *wm_xr_runtime_data_create();
 void wm_xr_runtime_data_free(wmXrRuntimeData **runtime);
+void wm_xr_session_data_cleanup(wmXrData *xr_data);
 
 /* `wm_xr_session.cc` */
 
@@ -300,6 +304,7 @@ void wm_xr_session_actions_update(wmWindowManager *wm);
  * picking. A square region keeps Blender's lens-based projection symmetric on both axes.
  */
 constexpr int XR_POINTER_REGION_SIZE = 1024;
+constexpr int XR_POINTER_GRID_CENTER = XR_POINTER_REGION_SIZE / 2;
 
 /**
  * Half-angle (radians) of the square pick frustum rendered around the right controller's aim

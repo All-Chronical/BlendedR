@@ -820,6 +820,9 @@ void BKE_panel_free(Panel *panel);
  * Doesn't free the area itself.
  */
 void BKE_screen_area_free(ScrArea *area);
+void BKE_screen_offscreen_area_register(ScrArea *area);
+void BKE_screen_offscreen_area_unregister(ScrArea *area);
+blender::Span<ScrArea *> BKE_screen_offscreen_areas_get();
 /**
  * Gizmo-maps of a region need to be freed with the region.
  * Uses callback to avoid low-level call.

@@ -1256,29 +1256,34 @@ void WM_gizmo_group_refresh(const bContext *C, wmGizmoGroup *gzgroup)
 {
   const wmGizmoGroupType *gzgt = gzgroup->type;
   if (gzgt->flag & WM_GIZMOGROUPTYPE_DELAY_REFRESH_FOR_TWEAK) {
-    wmGizmoMap *gzmap = gzgroup->parent_gzmap;
-    wmGizmo *gz = nullptr;
-    /* Without the check for refresh, any highlighted gizmo will prevent hiding
-     * when selecting with RMB when the cursor happens to be over a gizmo. */
-    if ((gzgroup->init_flag & WM_GIZMOGROUP_INIT_REFRESH) == 0) {
-      gz = wm_gizmomap_highlight_get(gzmap);
+    if (WM_gizmo_group_is_modal(gzgroup)) {
+      gzgroup->hide.delay_refresh_for_tweak = false;
     }
-    if (!gz || gz->parent_gzgroup != gzgroup) {
-      wmWindow *win = CTX_wm_window(C);
-      ARegion *region = CTX_wm_region(C);
-      BLI_assert(region->runtime->gizmo_map == gzmap);
-      /* Check if the tweak event originated from this region. */
-      if ((win->runtime->eventstate != nullptr) && (win->event_queue_check_drag) &&
-          BLI_rcti_isect_pt_v(&region->winrct, win->runtime->eventstate->prev_press_xy))
-      {
-        /* We need to run refresh again. */
-        gzgroup->init_flag &= ~WM_GIZMOGROUP_INIT_REFRESH;
-        WM_gizmomap_tag_refresh_drawstep(gzmap, WM_gizmomap_drawstep_from_gizmo_group(gzgroup));
-        gzgroup->hide.delay_refresh_for_tweak = true;
-        return;
+    else {
+      wmGizmoMap *gzmap = gzgroup->parent_gzmap;
+      wmGizmo *gz = nullptr;
+      /* Without the check for refresh, any highlighted gizmo will prevent hiding
+       * when selecting with RMB when the cursor happens to be over a gizmo. */
+      if ((gzgroup->init_flag & WM_GIZMOGROUP_INIT_REFRESH) == 0) {
+        gz = wm_gizmomap_highlight_get(gzmap);
       }
+      if (!gz || gz->parent_gzgroup != gzgroup) {
+        wmWindow *win = CTX_wm_window(C);
+        ARegion *region = CTX_wm_region(C);
+        BLI_assert(region->runtime->gizmo_map == gzmap);
+        /* Check if the tweak event originated from this region. */
+        if ((win->runtime->eventstate != nullptr) && (win->event_queue_check_drag) &&
+            BLI_rcti_isect_pt_v(&region->winrct, win->runtime->eventstate->prev_press_xy))
+        {
+          /* We need to run refresh again. */
+          gzgroup->init_flag &= ~WM_GIZMOGROUP_INIT_REFRESH;
+          WM_gizmomap_tag_refresh_drawstep(gzmap, WM_gizmomap_drawstep_from_gizmo_group(gzgroup));
+          gzgroup->hide.delay_refresh_for_tweak = true;
+          return;
+        }
+      }
+      gzgroup->hide.delay_refresh_for_tweak = false;
     }
-    gzgroup->hide.delay_refresh_for_tweak = false;
   }
 
   if (gzgroup->hide.any) {

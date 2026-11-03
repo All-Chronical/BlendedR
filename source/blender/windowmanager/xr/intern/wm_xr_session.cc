@@ -97,7 +97,7 @@ static void wm_xr_session_controller_data_free(wmXrSessionState *state)
     if (c->model) {
       GPU_batch_discard(c->model);
     }
-    BLI_freelinkN(lb, c);
+    MEM_delete(c);
   }
 }
 
@@ -140,8 +140,9 @@ static void wm_xr_session_exit_cb(void *customdata)
     xr_data->runtime->exit_fn(xr_data);
   }
 
-  /* Free the entire runtime data (including session state and context), to play safe. */
-  wm_xr_runtime_data_free(&xr_data->runtime);
+  /* Clean up session-specific data (area, modal handlers, context), while keeping
+   * GHOST OpenXR instance alive for seamless restart or clean application exit. */
+  wm_xr_session_data_cleanup(xr_data);
 }
 
 static void wm_xr_session_begin_info_create(wmXrData *xr_data,
@@ -247,7 +248,8 @@ wmWindow *wm_xr_session_root_window_or_fallback_get(const wmWindowManager *wm,
                                                     const wmXrRuntimeData *runtime_data)
 {
   /* Try to obtain the XR root window (the window the XR session was started in). */
-  wmWindow *xr_win = CTX_wm_window(runtime_data->b_context);
+  /* The context is freed when the session stops, so it may be null (e.g. on exit). */
+  wmWindow *xr_win = runtime_data->b_context ? CTX_wm_window(runtime_data->b_context) : nullptr;
   if (xr_win && BLI_findindex(&wm->windows, xr_win) != -1) {
     /* Root XR window is still valid, use it. */
     return xr_win;
@@ -550,6 +552,19 @@ bool WM_xr_session_mouse_event_add(wmXrData *xr,
       xr_event.prev_press_modifier = wmEventModifierFlag(
           xr->runtime->mouse_button_press_modifier[button_index]);
       xr->runtime->mouse_button_press_type[button_index] = 0;
+    }
+  }
+  else if (event->type == MOUSEMOVE) {
+    /* Populate previous press location and type if any button is currently pressed down,
+     * so drag distance tests (WM_event_drag_test) in wm_handlers_do can detect dragging. */
+    for (int i = 0; i < 3; i++) {
+      if (xr->runtime->mouse_button_press_type[i] != 0) {
+        xr_event.prev_press_type = wmEventType(xr->runtime->mouse_button_press_type[i]);
+        copy_v2_v2_int(xr_event.prev_press_xy, xr->runtime->mouse_button_press_xy[i]);
+        xr_event.prev_press_modifier = wmEventModifierFlag(
+            xr->runtime->mouse_button_press_modifier[i]);
+        break;
+      }
     }
   }
   wm_event_add_xr_mouse(xr_win, &xr_event);
@@ -1969,7 +1984,7 @@ static void wm_xr_session_surface_free_data(wmSurface *surface)
     if (vp->offscreen) {
       GPU_offscreen_free(vp->offscreen);
     }
-    BLI_freelinkN(lb, vp);
+    MEM_delete(vp);
   }
 
   if (data->controller_art) {

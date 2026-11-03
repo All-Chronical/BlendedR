@@ -1003,6 +1003,16 @@ void wm_gizmomap_handler_context_op(bContext *C, wmEventHandler_Op *handler)
       }
     }
     if (area == nullptr) {
+      /* XR offscreen areas are not part of any screen, but modal operators started from their
+       * gizmos still need the area and region restored (gizmo modal callbacks use the region). */
+      for (ScrArea *offscreen_area : BKE_screen_offscreen_areas_get()) {
+        if (offscreen_area == handler->context.area) {
+          area = offscreen_area;
+          break;
+        }
+      }
+    }
+    if (area == nullptr) {
       /* When changing screen layouts with running modal handlers (like render display),
        * this is not an error to print. */
     }

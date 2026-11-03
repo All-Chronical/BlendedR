@@ -587,6 +587,7 @@ void BKE_spacedata_id_unref(ScrArea *area, SpaceLink *sl, ID *id)
  * Avoid bad-level calls to #WM_gizmomap_tag_refresh.
  */
 static void (*region_refresh_tag_gizmomap_callback)(wmGizmoMap *) = nullptr;
+static Vector<ScrArea *> g_offscreen_areas;
 
 void BKE_region_callback_refresh_tag_gizmomap_set(void (*callback)(wmGizmoMap *))
 {
@@ -753,8 +754,31 @@ void BKE_area_region_free(SpaceType *st, ARegion *region)
   MEM_delete(region->runtime);
 }
 
+void BKE_screen_offscreen_area_register(ScrArea *area)
+{
+  if (area && !g_offscreen_areas.contains(area)) {
+    g_offscreen_areas.append(area);
+  }
+}
+
+void BKE_screen_offscreen_area_unregister(ScrArea *area)
+{
+  /* Called from both the editor free and #BKE_screen_area_free, so it must tolerate areas that
+   * are already unregistered (removing a missing item asserts and aborts the session exit). */
+  if (area && g_offscreen_areas.contains(area)) {
+    g_offscreen_areas.remove_first_occurrence_and_reorder(area);
+  }
+}
+
+Span<ScrArea *> BKE_screen_offscreen_areas_get()
+{
+  return g_offscreen_areas.as_span();
+}
+
 void BKE_screen_area_free(ScrArea *area)
 {
+  BKE_screen_offscreen_area_unregister(area);
+
   SpaceType *st = BKE_spacetype_from_id(area->spacetype);
 
   for (ARegion &region : area->regionbase) {

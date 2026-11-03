@@ -239,26 +239,41 @@ static wmGizmo *rna_GizmoProperties_find_operator(PointerRNA *ptr)
   wmWindowManager *wm = (wmWindowManager *)ptr->owner_id;
 #  endif
 
-  /* We could try workaround this lookup, but not trivial. */
-  for (bScreen *screen = static_cast<bScreen *>(G_MAIN->screens.first); screen;
-       screen = static_cast<bScreen *>(screen->id.next))
-  {
-    IDProperty *properties = static_cast<IDProperty *>(ptr->data);
-    for (ScrArea &area : screen->areabase) {
-      for (ARegion &region : area.regionbase) {
-        if (region.runtime->gizmo_map) {
-          wmGizmoMap *gzmap = region.runtime->gizmo_map;
-          for (wmGizmoGroup &gzgroup : *WM_gizmomap_group_list(gzmap)) {
-            for (wmGizmo &gz : gzgroup.gizmos) {
-              if (gz.properties == properties) {
-                return &gz;
-              }
+  IDProperty *properties = static_cast<IDProperty *>(ptr->data);
+
+  auto search_area = [&](ScrArea &area) -> wmGizmo * {
+    for (ARegion &region : area.regionbase) {
+      if (region.runtime->gizmo_map) {
+        wmGizmoMap *gzmap = region.runtime->gizmo_map;
+        for (wmGizmoGroup &gzgroup : *WM_gizmomap_group_list(gzmap)) {
+          for (wmGizmo &gz : gzgroup.gizmos) {
+            if (gz.properties == properties) {
+              return &gz;
             }
           }
         }
       }
     }
+    return nullptr;
+  };
+
+  /* We could try workaround this lookup, but not trivial. */
+  for (bScreen *screen = static_cast<bScreen *>(G_MAIN->screens.first); screen;
+       screen = static_cast<bScreen *>(screen->id.next))
+  {
+    for (ScrArea &area : screen->areabase) {
+      if (wmGizmo *gz = search_area(area)) {
+        return gz;
+      }
+    }
   }
+
+  for (ScrArea *area : BKE_screen_offscreen_areas_get()) {
+    if (wmGizmo *gz = search_area(*area)) {
+      return gz;
+    }
+  }
+
   return nullptr;
 }
 

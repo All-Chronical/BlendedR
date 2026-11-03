@@ -65,7 +65,7 @@ static PrimitiveGizmo3D *gizmo_primitive_rna_find_operator(PointerRNA *ptr)
 static int gizmo_primitive_rna__draw_style_get_fn(PointerRNA *ptr, PropertyRNA * /*prop*/)
 {
   PrimitiveGizmo3D *gz_prim = gizmo_primitive_rna_find_operator(ptr);
-  return gz_prim->draw_style;
+  return gz_prim ? gz_prim->draw_style : 0;
 }
 
 static void gizmo_primitive_rna__draw_style_set_fn(PointerRNA *ptr,
@@ -73,13 +73,15 @@ static void gizmo_primitive_rna__draw_style_set_fn(PointerRNA *ptr,
                                                    int value)
 {
   PrimitiveGizmo3D *gz_prim = gizmo_primitive_rna_find_operator(ptr);
-  gz_prim->draw_style = value;
+  if (gz_prim) {
+    gz_prim->draw_style = value;
+  }
 }
 
 static float gizmo_primitive_rna__arc_inner_factor_get_fn(PointerRNA *ptr, PropertyRNA * /*prop*/)
 {
   PrimitiveGizmo3D *gz_prim = gizmo_primitive_rna_find_operator(ptr);
-  return gz_prim->arc_inner_factor;
+  return gz_prim ? gz_prim->arc_inner_factor : 0.0f;
 }
 
 static void gizmo_primitive_rna__arc_inner_factor_set_fn(PointerRNA *ptr,
@@ -87,13 +89,15 @@ static void gizmo_primitive_rna__arc_inner_factor_set_fn(PointerRNA *ptr,
                                                          float value)
 {
   PrimitiveGizmo3D *gz_prim = gizmo_primitive_rna_find_operator(ptr);
-  gz_prim->arc_inner_factor = value;
+  if (gz_prim) {
+    gz_prim->arc_inner_factor = value;
+  }
 }
 
 static bool gizmo_primitive_rna__draw_inner_get_fn(PointerRNA *ptr, PropertyRNA * /*prop*/)
 {
   PrimitiveGizmo3D *gz_prim = gizmo_primitive_rna_find_operator(ptr);
-  return gz_prim->draw_inner;
+  return gz_prim ? gz_prim->draw_inner : false;
 }
 
 static void gizmo_primitive_rna__draw_inner_set_fn(PointerRNA *ptr,
@@ -101,7 +105,9 @@ static void gizmo_primitive_rna__draw_inner_set_fn(PointerRNA *ptr,
                                                    bool value)
 {
   PrimitiveGizmo3D *gz_prim = gizmo_primitive_rna_find_operator(ptr);
-  gz_prim->draw_inner = value;
+  if (gz_prim) {
+    gz_prim->draw_inner = value;
+  }
 }
 
 /* -------------------------------------------------------------------- */

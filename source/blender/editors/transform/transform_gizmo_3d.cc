@@ -52,6 +52,9 @@
 #include "ED_object.hh"
 #include "ED_particle.hh"
 #include "ED_screen.hh"
+#include "ED_view3d.hh"
+
+#include "gizmo/WM_gizmo_api.hh"
 
 #include "UI_resources.hh"
 
@@ -70,6 +73,45 @@ namespace blender::ed::transform {
 
 static wmGizmoGroupType *g_GGT_xform_gizmo = nullptr;
 static wmGizmoGroupType *g_GGT_xform_gizmo_context = nullptr;
+
+#ifdef WITH_XR_OPENXR
+static bool host_xform_gizmogroup_is_modal()
+{
+  Main *bmain = G_MAIN;
+  const wmWindowManager *wm = bmain ? static_cast<const wmWindowManager *>(bmain->wm.first) :
+                                      nullptr;
+  const ScrArea *host_area = wm ? ED_view3d_xr_host_area_get(wm) : nullptr;
+  const ARegion *host_region = host_area ?
+                                   BKE_area_find_region_type(const_cast<ScrArea *>(host_area),
+                                                             RGN_TYPE_WINDOW) :
+                                   nullptr;
+  if (!host_region || !host_region->runtime || !host_region->runtime->gizmo_map) {
+    return false;
+  }
+  return WM_gizmomap_get_modal(host_region->runtime->gizmo_map) != nullptr;
+}
+
+static bool xr_xform_gizmogroup_is_modal()
+{
+  Main *bmain = G_MAIN;
+  const wmWindowManager *wm = bmain ? static_cast<const wmWindowManager *>(bmain->wm.first) :
+                                      nullptr;
+  if (!wm || !wm->xr.runtime || !wm->xr.runtime->offscreen_area) {
+    return false;
+  }
+  const ARegion *xr_region = BKE_area_find_region_type(wm->xr.runtime->offscreen_area,
+                                                       RGN_TYPE_WINDOW);
+  if (!xr_region || !xr_region->runtime || !xr_region->runtime->gizmo_map) {
+    return false;
+  }
+  return WM_gizmomap_get_modal(xr_region->runtime->gizmo_map) != nullptr;
+}
+
+static bool any_xform_gizmogroup_is_modal()
+{
+  return host_xform_gizmogroup_is_modal() || xr_xform_gizmogroup_is_modal();
+}
+#endif
 
 static void gizmogroup_refresh_from_matrix(wmGizmoGroup *gzgroup,
                                            const float twmat[4][4],
@@ -1706,6 +1748,9 @@ static wmOperatorStatus gizmo_modal(bContext *C,
   }
 
   ARegion *region = CTX_wm_region(C);
+  if (region == nullptr || region->regiondata == nullptr) {
+    return OPERATOR_RUNNING_MODAL;
+  }
   RegionView3D *rv3d = static_cast<RegionView3D *>(region->regiondata);
   wmGizmoGroup *gzgroup = widget->parent_gzgroup;
 
@@ -1854,7 +1899,7 @@ static void WIDGETGROUP_gizmo_setup(const bContext *C, wmGizmoGroup *gzgroup)
 
   {
     ScrArea *area = CTX_wm_area(C);
-    const bToolRef *tref = area->runtime.tool;
+    const bToolRef *tref = area ? area->runtime.tool : nullptr;
 
     ggd->twtype = 0;
     if (tref && STREQ(tref->idname, "builtin.move")) {
@@ -2036,7 +2081,12 @@ static void WIDGETGROUP_gizmo_draw_prepare(const bContext *C, wmGizmoGroup *gzgr
   float idot[3];
 
   /* Re-calculate hidden unless modal. */
-  const bool is_modal = WM_gizmo_group_is_modal(gzgroup);
+  bool is_modal = WM_gizmo_group_is_modal(gzgroup);
+#ifdef WITH_XR_OPENXR
+  if (!is_modal && any_xform_gizmogroup_is_modal()) {
+    is_modal = true;
+  }
+#endif
 
   /* When looking through a selected camera, the gizmo can be at the
    * exact same position as the view, skip so we don't break selection. */
@@ -2228,6 +2278,11 @@ static bool WIDGETGROUP_gizmo_poll_generic(View3D *v3d)
     return false;
   }
   if (G.moving & (G_TRANSFORM_OBJ | G_TRANSFORM_EDIT)) {
+#ifdef WITH_XR_OPENXR
+    if (any_xform_gizmogroup_is_modal()) {
+      return true;
+    }
+#endif
     return false;
   }
   return true;
@@ -2236,8 +2291,11 @@ static bool WIDGETGROUP_gizmo_poll_generic(View3D *v3d)
 static bool WIDGETGROUP_gizmo_poll_context(const bContext *C, wmGizmoGroupType * /*gzgt*/)
 {
   ScrArea *area = CTX_wm_area(C);
+  if (!area) {
+    return false;
+  }
   View3D *v3d = static_cast<View3D *>(area->spacedata.first);
-  if (!WIDGETGROUP_gizmo_poll_generic(v3d)) {
+  if (!v3d || !WIDGETGROUP_gizmo_poll_generic(v3d)) {
     return false;
   }
 

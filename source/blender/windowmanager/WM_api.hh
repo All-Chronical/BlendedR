@@ -778,6 +778,10 @@ void WM_event_modal_handler_area_replace(wmWindow *win,
                                          const ScrArea *old_area,
                                          ScrArea *new_area);
 /**
+ * Cancel and remove any modal handlers attached to the given area across all windows.
+ */
+void WM_event_modal_handlers_cancel_by_area(bContext *C, const ScrArea *area);
+/**
  * Modal handlers store a pointer to a region which might be freed while the handler runs.
  * Use this function to NULL all handler pointers to \a old_region.
  */

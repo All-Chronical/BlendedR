@@ -356,8 +356,18 @@ void ED_view3d_draw_setup_view(const wmWindowManager *wm,
                                const rcti *rect)
 {
   RegionView3D *rv3d = static_cast<RegionView3D *>(region->regiondata);
+  const float (*effective_viewmat)[4] = viewmat;
 
 #ifdef WITH_XR_OPENXR
+  /* If this is the XR offscreen region, preserve the pick viewmat set by pointer pick setup
+   * instead of re-deriving an uninitialized orbit view matrix. */
+  if (effective_viewmat == nullptr && wm != nullptr && rv3d != nullptr && wm->xr.runtime != nullptr) {
+    bContext *xr_ctx = WM_xr_session_context_get(&wm->xr);
+    if (xr_ctx != nullptr && region == CTX_wm_region(xr_ctx)) {
+      effective_viewmat = rv3d->viewmat;
+    }
+  }
+
   /* Setup the view matrix. */
   if (ED_view3d_is_region_xr_mirror_active(wm, v3d, region)) {
     view3d_xr_mirror_setup(wm, depsgraph, scene, v3d, region, rect);
@@ -369,7 +379,7 @@ void ED_view3d_draw_setup_view(const wmWindowManager *wm,
     view3d_stereo3d_setup(depsgraph, scene, v3d, region, rect);
   }
   else {
-    view3d_main_region_setup_view(depsgraph, scene, v3d, region, viewmat, winmat, rect);
+    view3d_main_region_setup_view(depsgraph, scene, v3d, region, effective_viewmat, winmat, rect);
   }
 
 #ifndef WITH_XR_OPENXR
@@ -1836,6 +1846,89 @@ void ED_view3d_draw_offscreen(Depsgraph *depsgraph,
 
   G.f &= ~G_FLAG_RENDER_VIEWPORT;
 }
+
+#ifdef WITH_XR_OPENXR
+void ED_view3d_draw_offscreen_xr(Depsgraph *depsgraph,
+                                 Scene *scene,
+                                 View3D *v3d,
+                                 ARegion *region,
+                                 bContext *context,
+                                 int winx,
+                                 int winy,
+                                 const float viewmat[4][4],
+                                 const float winmat[4][4],
+                                 float clip_start,
+                                 float clip_end,
+                                 float xr_vignette_aperture,
+                                 uint display_flags,
+                                 GPUOffScreen *ofs,
+                                 GPUViewport *viewport)
+{
+  /* Save state that XR overrides */
+  const eView3D_Flag orig_flag = v3d->flag;
+  const eView3D_Flag2 orig_flag2 = v3d->flag2;
+  const float orig_clip_start = v3d->clip_start;
+  const float orig_clip_end = v3d->clip_end;
+  const float orig_aperture = v3d->xr_vignette_aperture;
+
+  /* Set XR session surface and presentation flags */
+  v3d->flag |= V3D_XR_SESSION_SURFACE;
+  if (display_flags & V3D_OFSDRAW_XR_SHOW_CONTROLLERS) {
+    v3d->flag2 |= V3D_XR_SHOW_CONTROLLERS;
+  }
+  else {
+    v3d->flag2 &= ~V3D_XR_SHOW_CONTROLLERS;
+  }
+  if (display_flags & V3D_OFSDRAW_XR_SHOW_CUSTOM_OVERLAYS) {
+    v3d->flag2 |= V3D_XR_SHOW_CUSTOM_OVERLAYS;
+  }
+  else {
+    v3d->flag2 &= ~V3D_XR_SHOW_CUSTOM_OVERLAYS;
+  }
+  if (display_flags & V3D_OFSDRAW_XR_SHOW_PASSTHROUGH) {
+    v3d->flag2 |= V3D_XR_SHOW_PASSTHROUGH;
+  }
+  else {
+    v3d->flag2 &= ~V3D_XR_SHOW_PASSTHROUGH;
+  }
+
+  v3d->clip_start = clip_start;
+  v3d->clip_end = clip_end;
+  v3d->xr_vignette_aperture = xr_vignette_aperture;
+
+  /* Ensure RegionView3D has perspective mode set for XR */
+  RegionView3D *rv3d = static_cast<RegionView3D *>(region->regiondata);
+  const eRegionView3D_Persp orig_persp = rv3d->persp;
+  rv3d->persp = RV3D_PERSP;
+
+  /* Render using standard offscreen pipeline */
+  ED_view3d_draw_offscreen(depsgraph,
+                           scene,
+                           eDrawType(v3d->shading.type),
+                           v3d,
+                           region,
+                           context,
+                           winx,
+                           winy,
+                           viewmat,
+                           winmat,
+                           false,
+                           true,
+                           nullptr,
+                           false,
+                           true,
+                           ofs,
+                           viewport);
+
+  /* Restore RegionView3D and View3D state */
+  rv3d->persp = orig_persp;
+  v3d->flag = orig_flag;
+  v3d->flag2 = orig_flag2;
+  v3d->clip_start = orig_clip_start;
+  v3d->clip_end = orig_clip_end;
+  v3d->xr_vignette_aperture = orig_aperture;
+}
+#endif
 
 void ED_view3d_draw_offscreen_simple(Depsgraph *depsgraph,
                                      Scene *scene,
