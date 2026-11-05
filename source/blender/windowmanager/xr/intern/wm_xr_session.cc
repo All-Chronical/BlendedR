@@ -52,6 +52,7 @@
 #include "WM_api.hh"
 #include "WM_types.hh"
 
+#include "wm_draw.hh"
 #include "wm_event_system.hh"
 #include "wm_surface.hh"
 #include "wm_window.hh"
@@ -507,6 +508,8 @@ static int wm_xr_mouse_button_index(const wmEventType type)
 bool WM_xr_session_mouse_event_add(wmXrData *xr,
                                    const wmWindowManager *wm,
                                    const wmEvent *event,
+                                   ScrArea *target_area,
+                                   ARegion *target_region,
                                    const char **r_error)
 {
   BLI_assert(r_error);
@@ -528,6 +531,10 @@ bool WM_xr_session_mouse_event_add(wmXrData *xr,
     *r_error = "mouse-button events must use PRESS or RELEASE";
     return false;
   }
+  if ((target_area == nullptr) != (target_region == nullptr)) {
+    *r_error = "target_area and target_region must both be set, or both be unset";
+    return false;
+  }
 
   wmWindow *xr_win = wm_xr_session_root_window_or_fallback_get(wm, xr->runtime);
   if (xr_win == nullptr) {
@@ -535,39 +542,105 @@ bool WM_xr_session_mouse_event_add(wmXrData *xr,
     return false;
   }
 
+  /* A target override (e.g. a desktop UI quad) keeps its own press-state bookkeeping, separate
+   * from the default XR offscreen scene view's, so switching targets between ticks cannot
+   * corrupt either target's own click/drag detection. */
+  const bool use_ui_target = (target_area != nullptr);
+  int *press_type = use_ui_target ? xr->runtime->ui_mouse_button_press_type :
+                                    xr->runtime->mouse_button_press_type;
+  int (*press_xy)[2] = use_ui_target ? xr->runtime->ui_mouse_button_press_xy :
+                                       xr->runtime->mouse_button_press_xy;
+  int *press_modifier = use_ui_target ? xr->runtime->ui_mouse_button_press_modifier :
+                                        xr->runtime->mouse_button_press_modifier;
+
   wmEvent xr_event = *event;
   const int button_index = wm_xr_mouse_button_index(event->type);
   if (button_index >= 0) {
     if (event->val == KM_PRESS) {
-      xr->runtime->mouse_button_press_type[button_index] = event->type;
-      copy_v2_v2_int(xr->runtime->mouse_button_press_xy[button_index], event->xy);
-      xr->runtime->mouse_button_press_modifier[button_index] = event->modifier;
+      press_type[button_index] = event->type;
+      copy_v2_v2_int(press_xy[button_index], event->xy);
+      press_modifier[button_index] = event->modifier;
     }
     else {
       /* Release events need the matching press recorded so click/drag detection works. */
       xr_event.prev_type = event->type;
       xr_event.prev_val = KM_PRESS;
-      xr_event.prev_press_type = wmEventType(xr->runtime->mouse_button_press_type[button_index]);
-      copy_v2_v2_int(xr_event.prev_press_xy, xr->runtime->mouse_button_press_xy[button_index]);
-      xr_event.prev_press_modifier = wmEventModifierFlag(
-          xr->runtime->mouse_button_press_modifier[button_index]);
-      xr->runtime->mouse_button_press_type[button_index] = 0;
+      xr_event.prev_press_type = wmEventType(press_type[button_index]);
+      copy_v2_v2_int(xr_event.prev_press_xy, press_xy[button_index]);
+      xr_event.prev_press_modifier = wmEventModifierFlag(press_modifier[button_index]);
+      press_type[button_index] = 0;
     }
   }
   else if (event->type == MOUSEMOVE) {
     /* Populate previous press location and type if any button is currently pressed down,
      * so drag distance tests (WM_event_drag_test) in wm_handlers_do can detect dragging. */
     for (int i = 0; i < 3; i++) {
-      if (xr->runtime->mouse_button_press_type[i] != 0) {
-        xr_event.prev_press_type = wmEventType(xr->runtime->mouse_button_press_type[i]);
-        copy_v2_v2_int(xr_event.prev_press_xy, xr->runtime->mouse_button_press_xy[i]);
-        xr_event.prev_press_modifier = wmEventModifierFlag(
-            xr->runtime->mouse_button_press_modifier[i]);
+      if (press_type[i] != 0) {
+        xr_event.prev_press_type = wmEventType(press_type[i]);
+        copy_v2_v2_int(xr_event.prev_press_xy, press_xy[i]);
+        xr_event.prev_press_modifier = wmEventModifierFlag(press_modifier[i]);
         break;
       }
     }
   }
-  wm_event_add_xr_mouse(xr_win, &xr_event);
+  wm_event_add_xr_mouse(xr_win, &xr_event, target_area, target_region);
+  return true;
+}
+
+void WM_xr_session_ui_quad_set(wmXrData *xr,
+                               ARegion *region,
+                               const float location[3],
+                               const float rotation[4],
+                               float width,
+                               float height)
+{
+  if (xr->runtime == nullptr) {
+    return;
+  }
+  xr->runtime->ui_quad_region = region;
+  if (region != nullptr) {
+    copy_v3_v3(xr->runtime->ui_quad_location, location);
+    copy_qt_qt(xr->runtime->ui_quad_rotation, rotation);
+    xr->runtime->ui_quad_width = width;
+    xr->runtime->ui_quad_height = height;
+  }
+}
+
+static bool wm_xr_region_on_active_screen(const wmWindowManager *wm, const ARegion *region)
+{
+  for (const wmWindow &win : wm->windows) {
+    const bScreen *screen = WM_window_get_active_screen(&win);
+    for (const ScrArea &area : screen->areabase) {
+      if (BLI_findindex(&area.regionbase, region) != -1) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool WM_xr_session_ui_quad_get(const wmWindowManager *wm,
+                               gpu::Texture **r_texture,
+                               float r_location[3],
+                               float r_rotation[4],
+                               float *r_width,
+                               float *r_height)
+{
+  const wmXrRuntimeData *runtime = wm->xr.runtime;
+  if (runtime == nullptr || runtime->ui_quad_region == nullptr ||
+      !wm_xr_region_on_active_screen(wm, runtime->ui_quad_region))
+  {
+    return false;
+  }
+  gpu::Texture *texture = wm_draw_region_texture(runtime->ui_quad_region, 0);
+  if (texture == nullptr) {
+    return false;
+  }
+  *r_texture = texture;
+  copy_v3_v3(r_location, runtime->ui_quad_location);
+  copy_qt_qt(r_rotation, runtime->ui_quad_rotation);
+  *r_width = runtime->ui_quad_width;
+  *r_height = runtime->ui_quad_height;
   return true;
 }
 

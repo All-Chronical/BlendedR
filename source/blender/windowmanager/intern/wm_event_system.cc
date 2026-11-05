@@ -4159,6 +4159,10 @@ static void wm_event_free_and_remove_from_queue_if_valid(wmEvent *event)
 #ifdef WITH_XR_OPENXR
 struct wmXrMouseEventData {
   wmEvent event;
+  /* Non-null when this event targets an area/region other than the XR offscreen scene view
+   * (e.g. a desktop editor's UI surfaced in XR). Null preserves today's behavior exactly. */
+  ScrArea *target_area = nullptr;
+  ARegion *target_region = nullptr;
 };
 
 /**
@@ -4360,10 +4364,16 @@ static void wm_event_handle_xr_mouse_event(wmWindowManager *wm,
   wmXrMouseEventData *inputdata = static_cast<wmXrMouseEventData *>(event->customdata);
   wmEvent *input_event = &inputdata->event;
   bContext *xr_context = WM_xr_session_context_ensure(&wm->xr, wm);
-  ScrArea *xr_area = CTX_wm_area(xr_context);
-  ARegion *xr_region = CTX_wm_region(xr_context);
 
-  BLI_assert(xr_area && xr_area->spacetype == SPACE_VIEW3D && xr_region);
+  const bool has_target_override = (inputdata->target_area != nullptr);
+  ScrArea *xr_area = has_target_override ? inputdata->target_area : CTX_wm_area(xr_context);
+  ARegion *xr_region = has_target_override ? inputdata->target_region : CTX_wm_region(xr_context);
+
+  BLI_assert(xr_area && xr_region);
+  /* The default (no override) target is always the XR offscreen scene view. A target override
+   * is expected to stay narrowly scoped to another SPACE_VIEW3D area's UI (see
+   * #wm_event_add_xr_mouse); this is not a general-purpose XR-to-desktop event bridge. */
+  BLI_assert(has_target_override || xr_area->spacetype == SPACE_VIEW3D);
 
   const uint xr_ctx_scene_uid = CTX_data_scene(xr_context)->id.session_uid;
   const uint main_ctx_scene_uid = CTX_data_scene(main_context)->id.session_uid;
@@ -4375,25 +4385,50 @@ static void wm_event_handle_xr_mouse_event(wmWindowManager *wm,
 
   const bool is_button_event = ISMOUSE_BUTTON(input_event->type);
 
-  /* Swap in XR's drag and click detection state so XR and desktop do not contaminate each other. */
+  /* Desktop UI takes the cursor from the window's event state (popup placement, tool-tips) and
+   * queues follow-up mouse moves at it. While dispatching to a target override that state must
+   * describe the XR pointer, or the event acts at the desktop mouse instead. */
+  wmEvent *eventstate = win->runtime->eventstate;
+  const int desktop_xy[2] = {UNPACK2(eventstate->xy)};
+  const int desktop_prev_xy[2] = {UNPACK2(eventstate->prev_xy)};
+  const wmEventModifierFlag desktop_modifier = eventstate->modifier;
+  const auto desktop_addmousemove = win->addmousemove;
+  if (has_target_override) {
+    copy_v2_v2_int(eventstate->xy, input_event->xy);
+    copy_v2_v2_int(eventstate->prev_xy, input_event->xy);
+    eventstate->modifier = input_event->modifier;
+  }
+
+  /* Swap in XR's drag and click detection state so XR and desktop do not contaminate each other.
+   * A target override (e.g. a desktop UI quad) uses its own persisted state so switching targets
+   * between ticks cannot corrupt either target's own drag/click state. */
   const bool desktop_check_drag = win->event_queue_check_drag;
   const bool desktop_check_drag_handled = win->event_queue_check_drag_handled;
   const bool desktop_check_click = win->event_queue_check_click;
 
   if (wm->xr.runtime != nullptr) {
-    win->event_queue_check_drag = wm->xr.runtime->event_queue_check_drag;
-    win->event_queue_check_drag_handled = wm->xr.runtime->event_queue_check_drag_handled;
-    win->event_queue_check_click = wm->xr.runtime->event_queue_check_click;
+    if (has_target_override) {
+      win->event_queue_check_drag = wm->xr.runtime->ui_event_queue_check_drag;
+      win->event_queue_check_drag_handled = wm->xr.runtime->ui_event_queue_check_drag_handled;
+      win->event_queue_check_click = wm->xr.runtime->ui_event_queue_check_click;
+    }
+    else {
+      win->event_queue_check_drag = wm->xr.runtime->event_queue_check_drag;
+      win->event_queue_check_drag_handled = wm->xr.runtime->event_queue_check_drag_handled;
+      win->event_queue_check_click = wm->xr.runtime->event_queue_check_click;
+    }
   }
 
-  if (is_button_event || win->event_queue_check_drag) {
+  if (is_button_event || win->event_queue_check_drag || has_target_override) {
     /* Same as the regular event path: GPU selecting (view3d.select) and other operators need
      * an active GPU context, which the XR surface draw does not leave behind. */
     wm_window_make_drawable(wm, win);
-    if (is_button_event) {
+    if (is_button_event && !has_target_override) {
       /* Aim the offscreen region along the controller so GPU picking resolves the event against the
-       * laser. Only button events pick; binding the viewport for every pointer move would also run
-       * gizmo 3D intersection tests on the offscreen region each tick and trigger GPU TDR resets. */
+       * laser. Only the default scene target has a pick camera to aim; a target override (e.g. a
+       * desktop UI quad) has no 3D pick concept, and binding the viewport for every pointer move
+       * would also run gizmo 3D intersection tests on the offscreen region each tick and trigger
+       * GPU TDR resets. */
       wm_xr_session_pointer_pick_setup(xr_context, &wm->xr);
     }
   }
@@ -4482,9 +4517,11 @@ static void wm_event_handle_xr_mouse_event(wmWindowManager *wm,
 
   /* Region/area keymap and handlers run for button events, and for pointer moves when drag
    * detection is active (win->event_queue_check_drag) so that click-drag events (KM_PRESS_DRAG)
-   * can be generated for gizmos, transforms, and selection. Pure hover moves skip this to avoid
-   * redundant UI hover updates and GPU TDR resets. */
-  const bool handle_region_handlers = is_button_event || win->event_queue_check_drag;
+   * can be generated for gizmos, transforms, and selection. Pure hover moves over the scene skip
+   * this to avoid redundant UI hover updates and GPU TDR resets. A target override always needs
+   * them: UI buttons only become active on a mouse move, and a press acts on the active button. */
+  const bool handle_region_handlers = is_button_event || win->event_queue_check_drag ||
+                                      has_target_override;
   if (handle_region_handlers && (action & WM_HANDLER_BREAK) == 0) {
     action |= wm_event_do_region_handlers(xr_context, input_event, xr_region);
   }
@@ -4523,15 +4560,29 @@ static void wm_event_handle_xr_mouse_event(wmWindowManager *wm,
 
   /* Save XR's drag/click state back to runtime and restore desktop window's state. */
   if (wm->xr.runtime != nullptr) {
-    wm->xr.runtime->event_queue_check_drag = win->event_queue_check_drag;
-    wm->xr.runtime->event_queue_check_drag_handled = win->event_queue_check_drag_handled;
-    wm->xr.runtime->event_queue_check_click = win->event_queue_check_click;
+    if (has_target_override) {
+      wm->xr.runtime->ui_event_queue_check_drag = win->event_queue_check_drag;
+      wm->xr.runtime->ui_event_queue_check_drag_handled = win->event_queue_check_drag_handled;
+      wm->xr.runtime->ui_event_queue_check_click = win->event_queue_check_click;
+    }
+    else {
+      wm->xr.runtime->event_queue_check_drag = win->event_queue_check_drag;
+      wm->xr.runtime->event_queue_check_drag_handled = win->event_queue_check_drag_handled;
+      wm->xr.runtime->event_queue_check_click = win->event_queue_check_click;
+    }
   }
 
   /* Restore the desktop drag/click state so XR dispatch cannot trigger desktop box-select. */
   win->event_queue_check_drag = desktop_check_drag;
   win->event_queue_check_drag_handled = desktop_check_drag_handled;
   win->event_queue_check_click = desktop_check_click;
+
+  if (has_target_override) {
+    copy_v2_v2_int(eventstate->xy, desktop_xy);
+    copy_v2_v2_int(eventstate->prev_xy, desktop_prev_xy);
+    eventstate->modifier = desktop_modifier;
+    win->addmousemove = desktop_addmousemove;
+  }
 
   CTX_data_main_set(main_context, CTX_data_main(xr_context));
   if (ctx_xr_main_scene_match) {
@@ -6990,13 +7041,18 @@ void wm_event_add_xrevent(wmWindow *win, wmXrActionData *actiondata, short val)
   WM_event_add(win, &event);
 }
 
-void wm_event_add_xr_mouse(wmWindow *win, const wmEvent *event_to_add)
+void wm_event_add_xr_mouse(wmWindow *win,
+                           const wmEvent *event_to_add,
+                           ScrArea *target_area,
+                           ARegion *target_region)
 {
   wmXrMouseEventData *inputdata = MEM_new<wmXrMouseEventData>(__func__);
   inputdata->event = *event_to_add;
   inputdata->event.custom = 0;
   inputdata->event.customdata = nullptr;
   inputdata->event.customdata_free = false;
+  inputdata->target_area = target_area;
+  inputdata->target_region = target_region;
 
   wmEvent event{};
   event.type = EVT_XR_ACTION;

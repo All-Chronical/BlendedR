@@ -242,6 +242,24 @@ void wm_xr_session_data_cleanup(wmXrData *xr_data)
          0,
          sizeof(xr_data->runtime->mouse_button_press_modifier));
 
+  /* Mirrors of the above for a mouse_event_add target override (e.g. a desktop UI quad); see
+   * wm_xr_intern.hh. Cleared here too, for the same reason. */
+  xr_data->runtime->ui_event_queue_check_click = false;
+  xr_data->runtime->ui_event_queue_check_drag = false;
+  xr_data->runtime->ui_event_queue_check_drag_handled = false;
+  memset(xr_data->runtime->ui_mouse_button_press_type,
+         0,
+         sizeof(xr_data->runtime->ui_mouse_button_press_type));
+  memset(xr_data->runtime->ui_mouse_button_press_xy,
+         0,
+         sizeof(xr_data->runtime->ui_mouse_button_press_xy));
+  memset(xr_data->runtime->ui_mouse_button_press_modifier,
+         0,
+         sizeof(xr_data->runtime->ui_mouse_button_press_modifier));
+
+  /* The runtime data outlives the session (see above), so the quad must be cleared by hand. */
+  xr_data->runtime->ui_quad_region = nullptr;
+
   wm_xr_session_data_free(&xr_data->runtime->session_state);
   WM_xr_actionmaps_clear(xr_data->runtime);
 }

@@ -164,7 +164,15 @@ void wm_event_add_ghostevent(wmWindowManager *wm,
                              const uint64_t event_time_ms);
 #ifdef WITH_XR_OPENXR
 void wm_event_add_xrevent(wmWindow *win, wmXrActionData *actiondata, short val);
-void wm_event_add_xr_mouse(wmWindow *win, const wmEvent *event);
+/**
+ * \param target_area, target_region: When non-null, dispatch against this area/region instead
+ * of the XR offscreen scene view (e.g. a desktop editor's UI surfaced in XR). Null preserves
+ * today's default XR offscreen-area dispatch exactly.
+ */
+void wm_event_add_xr_mouse(wmWindow *win,
+                           const wmEvent *event,
+                           ScrArea *target_area = nullptr,
+                           ARegion *target_region = nullptr);
 #endif
 
 void wm_event_do_depsgraph(bContext *C, bool is_after_open_file);

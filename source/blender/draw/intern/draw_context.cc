@@ -16,6 +16,7 @@
 #include "BLI_map.hh"
 #include "BLI_math_matrix.h"
 #include "BLI_math_matrix_types.hh"
+#include "BLI_math_rotation.h"
 #include "BLI_math_vector.h"
 #include "BLI_rect.h"
 #include "BLI_string.h"
@@ -66,6 +67,7 @@
 
 #include "GPU_capabilities.hh"
 #include "GPU_framebuffer.hh"
+#include "GPU_immediate.hh"
 #include "GPU_matrix.hh"
 #include "GPU_platform.hh"
 #include "GPU_shader_shared.hh"
@@ -1460,6 +1462,60 @@ static void drw_callbacks_post_scene_xr_surface(DRWContext &draw_ctx)
 
       DRW_draw_gizmo_3d(draw_ctx.evil_C, gizmo_region);
 
+      draw::command::StateSet::set();
+    }
+  }
+
+  /* 4. Draw the world-fixed UI quad (a desktop editor's UI surfaced in XR, e.g. the Host 3D
+   * View's header), if the add-on has activated one via #WM_xr_session_ui_quad_set. */
+  {
+    gpu::Texture *ui_quad_texture = nullptr;
+    float ui_quad_location[3];
+    float ui_quad_rotation[4];
+    float ui_quad_width = 0.0f;
+    float ui_quad_height = 0.0f;
+    if (wm && WM_xr_session_ui_quad_get(wm,
+                                        &ui_quad_texture,
+                                        ui_quad_location,
+                                        ui_quad_rotation,
+                                        &ui_quad_width,
+                                        &ui_quad_height))
+    {
+      float ui_quad_model[4][4];
+      quat_to_mat4(ui_quad_model, ui_quad_rotation);
+      copy_v3_v3(ui_quad_model[3], ui_quad_location);
+
+      GPU_matrix_push();
+      GPU_matrix_mul(ui_quad_model);
+
+      const rctf ui_quad_rect = {-ui_quad_width * 0.5f,
+                                 ui_quad_width * 0.5f,
+                                 -ui_quad_height * 0.5f,
+                                 ui_quad_height * 0.5f};
+      constexpr rctf ui_quad_uv = {0.0f, 1.0f, 0.0f, 1.0f};
+      constexpr float ui_quad_color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+
+      GPUVertFormat *ui_quad_format = immVertexFormat();
+      uint ui_quad_pos = GPU_vertformat_attr_add(
+          ui_quad_format, "pos", gpu::VertAttrType::SFLOAT_32_32);
+      uint ui_quad_texco = GPU_vertformat_attr_add(
+          ui_quad_format, "texCoord", gpu::VertAttrType::SFLOAT_32_32);
+
+      GPU_depth_test(GPU_DEPTH_NONE);
+      GPU_apply_state();
+      GPU_blend(GPU_BLEND_ALPHA_PREMULT);
+      immBindBuiltinProgram(GPU_SHADER_3D_IMAGE_COLOR);
+      immUniformColor4fv(ui_quad_color);
+      const GPUSamplerExtendMode ui_quad_extend = GPU_SAMPLER_EXTEND_MODE_CLAMP_TO_BORDER;
+      immBindTextureSampler(
+          "image",
+          ui_quad_texture,
+          {GPU_SAMPLER_FILTERING_LINEAR, ui_quad_extend, ui_quad_extend});
+      immRectf_with_texco(ui_quad_pos, ui_quad_texco, ui_quad_rect, ui_quad_uv);
+      immUnbindProgram();
+      GPU_blend(GPU_BLEND_NONE);
+
+      GPU_matrix_pop();
       draw::command::StateSet::set();
     }
   }

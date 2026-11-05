@@ -36,6 +36,10 @@ class GHOST_IContext;
 
 namespace blender {
 
+namespace gpu {
+class Texture;
+}
+
 struct ARegion;
 struct GPUViewport;
 struct ID;
@@ -2292,11 +2296,39 @@ wmXrViewfinderState *WM_xr_session_state_viewfinder_handle_get(const wmXrData *x
 bContext *WM_xr_session_context_get(const wmXrData *xr);
 bContext *WM_xr_session_context_ensure(wmXrData *xr, const wmWindowManager *wm);
 
-/** Queue a mouse event for handling in the XR offscreen viewport. */
+/**
+ * Queue a mouse event for handling in the XR offscreen viewport, or, when \a target_area and
+ * \a target_region are non-null, against that area/region instead (e.g. a desktop editor's UI
+ * surfaced in XR). Null preserves today's default dispatch exactly.
+ */
 bool WM_xr_session_mouse_event_add(wmXrData *xr,
                                    const wmWindowManager *wm,
                                    const wmEvent *event,
+                                   ScrArea *target_area,
+                                   ARegion *target_region,
                                    const char **r_error);
+
+/**
+ * Set or clear the world-fixed UI quad drawn in the XR surface pass (a desktop editor's UI
+ * surfaced in XR). \a region is null to deactivate; otherwise the quad shows that region's own
+ * draw buffer, the same pixels the desktop window composites.
+ */
+void WM_xr_session_ui_quad_set(wmXrData *xr,
+                               ARegion *region,
+                               const float location[3],
+                               const float rotation[4],
+                               float width,
+                               float height);
+/**
+ * \return false (leaving outputs untouched) when the UI quad is inactive, its region no longer
+ * exists on a window's active screen, or the region has not been drawn yet.
+ */
+bool WM_xr_session_ui_quad_get(const wmWindowManager *wm,
+                               gpu::Texture **r_texture,
+                               float r_location[3],
+                               float r_rotation[4],
+                               float *r_width,
+                               float *r_height);
 
 void WM_xr_session_base_pose_reset(wmXrData *xr);
 void WM_xr_session_state_navigation_reset(wmXrSessionState *state);

@@ -904,7 +904,9 @@ static bool rna_XrSessionState_mouse_event_add(ReportList *reports,
                                                int y,
                                                bool shift,
                                                bool ctrl,
-                                               bool alt)
+                                               bool alt,
+                                               ScrArea *area,
+                                               ARegion *region)
 {
 #  ifdef WITH_XR_OPENXR
   if (!ELEM(type, MOUSEMOVE, LEFTMOUSE, MIDDLEMOUSE, RIGHTMOUSE) ||
@@ -912,6 +914,10 @@ static bool rna_XrSessionState_mouse_event_add(ReportList *reports,
       (ISMOUSE_BUTTON(type) && !ELEM(value, KM_PRESS, KM_RELEASE)))
   {
     BKE_report(reports, RPT_ERROR, "Unsupported XR mouse event");
+    return false;
+  }
+  if ((area == nullptr) != (region == nullptr)) {
+    BKE_report(reports, RPT_ERROR, "area and region must both be given, or both omitted");
     return false;
   }
 
@@ -933,14 +939,29 @@ static bool rna_XrSessionState_mouse_event_add(ReportList *reports,
 
   wmWindowManager *wm = CTX_wm_manager(C);
   const char *error = nullptr;
-  if (!WM_xr_session_mouse_event_add(&wm->xr, wm, &event, &error)) {
+  if (!WM_xr_session_mouse_event_add(&wm->xr, wm, &event, area, region, &error)) {
     BKE_report(reports, RPT_ERROR, error);
     return false;
   }
   return true;
 #  else
-  UNUSED_VARS(C, reports, type, value, x, y, shift, ctrl, alt);
+  UNUSED_VARS(C, reports, type, value, x, y, shift, ctrl, alt, area, region);
   return false;
+#  endif
+}
+
+static void rna_XrSessionState_ui_quad_set(bContext *C,
+                                           ARegion *region,
+                                           const float location[3],
+                                           const float rotation[4],
+                                           float width,
+                                           float height)
+{
+#  ifdef WITH_XR_OPENXR
+  wmWindowManager *wm = CTX_wm_manager(C);
+  WM_xr_session_ui_quad_set(&wm->xr, region, location, rotation, width, height);
+#  else
+  UNUSED_VARS(C, region, location, rotation, width, height);
 #  endif
 }
 
@@ -2692,8 +2713,68 @@ static void rna_def_xr_session_state(BlenderRNA *brna)
   RNA_def_boolean(func, "shift", false, "Shift", "Apply the Shift modifier");
   RNA_def_boolean(func, "ctrl", false, "Ctrl", "Apply the Ctrl modifier");
   RNA_def_boolean(func, "alt", false, "Alt", "Apply the Alt modifier");
+  RNA_def_pointer(func,
+                  "area",
+                  "Area",
+                  "",
+                  "Dispatch against this area instead of the XR offscreen scene view "
+                  "(must be given together with region)");
+  RNA_def_pointer(func,
+                  "region",
+                  "Region",
+                  "",
+                  "Dispatch against this region instead of the XR offscreen scene view "
+                  "(must be given together with area)");
   parm = RNA_def_boolean(func, "result", false, "Result", "Whether the event was queued");
   RNA_def_function_return(func, parm);
+
+  func = RNA_def_function(srna, "ui_quad_set", "rna_XrSessionState_ui_quad_set");
+  RNA_def_function_ui_description(
+      func,
+      "Set or clear the world-fixed UI quad drawn in the XR surface pass. region is None to "
+      "deactivate; otherwise the quad shows that region's own draw buffer");
+  RNA_def_function_flag(func, FUNC_NO_SELF);
+  parm = RNA_def_pointer(func, "context", "Context", "", "");
+  RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
+  parm = RNA_def_pointer(
+      func, "region", "Region", "", "The region to show on the quad, or None to deactivate");
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  parm = RNA_def_float_translation(func,
+                                   "location",
+                                   3,
+                                   nullptr,
+                                   -FLT_MAX,
+                                   FLT_MAX,
+                                   "Location",
+                                   "The quad's center, in world space",
+                                   -FLT_MAX,
+                                   FLT_MAX);
+  RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
+  parm = RNA_def_float_vector(func,
+                              "rotation",
+                              4,
+                              nullptr,
+                              -FLT_MAX,
+                              FLT_MAX,
+                              "Rotation",
+                              "The quad's orientation, in world space",
+                              -FLT_MAX,
+                              FLT_MAX);
+  parm->subtype = PROP_QUATERNION;
+  RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
+  parm = RNA_def_float(
+      func, "width", 1.0f, 0.0f, FLT_MAX, "Width", "The quad's width, in meters", 0.0f, FLT_MAX);
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  parm = RNA_def_float(func,
+                       "height",
+                       1.0f,
+                       0.0f,
+                       FLT_MAX,
+                       "Height",
+                       "The quad's height, in meters",
+                       0.0f,
+                       FLT_MAX);
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
 
   func = RNA_def_function(srna, "action_state_get", "rna_XrSessionState_action_state_get");
   RNA_def_function_ui_description(func, "Get the current state of a VR action");

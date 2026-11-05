@@ -159,6 +159,27 @@ struct wmXrRuntimeData {
   bool event_queue_check_click;
   bool event_queue_check_drag;
   bool event_queue_check_drag_handled;
+  /* Mirrors of the three fields above and the three mouse_button_press_* arrays, for mouse
+   * events explicitly targeted at an area/region other than the XR offscreen scene view (see
+   * #WM_xr_session_mouse_event_add's target_area/target_region). Kept separate so switching
+   * targets between ticks cannot corrupt either target's own press/drag/click state. */
+  int ui_mouse_button_press_type[3];
+  int ui_mouse_button_press_xy[3][2];
+  int ui_mouse_button_press_modifier[3];
+  bool ui_event_queue_check_click;
+  bool ui_event_queue_check_drag;
+  bool ui_event_queue_check_drag_handled;
+
+  /* World-fixed UI quad (desktop editor UI surfaced in XR), set by the add-on via
+   * #WM_xr_session_ui_quad_set and read by the XR surface draw pass via
+   * #WM_xr_session_ui_quad_get. Null means inactive. Not owned, and the region can be freed
+   * between ticks (e.g. a workspace change), so #WM_xr_session_ui_quad_get validates it. */
+  ARegion *ui_quad_region;
+  float ui_quad_location[3];
+  float ui_quad_rotation[4];
+  float ui_quad_width;
+  float ui_quad_height;
+
   short actactionmap;
   short selactionmap;
 };
