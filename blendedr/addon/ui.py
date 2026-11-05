@@ -90,6 +90,10 @@ class VIEW3D_PT_blendedr(bpy.types.Panel):
         layout.label(text=f"Input actions: {'Active' if runtime.debug_state['action_set_active'] else 'Inactive'}")
         layout.label(text=f"Navigation: {runtime.debug_state['navigation_mode']}")
         layout.label(text=f"Last pointer event: {runtime.debug_state['last_mouse_event']}")
+        quad_active = runtime.ui_quad_transform is not None
+        aim_pixel = runtime.ui_aim_pixel
+        aim_text = "off quad" if aim_pixel is None else f"aim pixel {aim_pixel[0]}, {aim_pixel[1]}"
+        layout.label(text=f"UI quad: {'Active' if quad_active else 'Inactive'}, {aim_text}")
         active_ob = context.active_object
         layout.label(text=f"Active object: {active_ob.name if active_ob else 'None'}")
         layout.label(text=f"Selected: {len(context.selected_objects)} objects")

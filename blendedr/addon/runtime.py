@@ -38,6 +38,15 @@ previous_active_tool = None
 drag_start_aim_loc = None
 drag_start_aim_rot = None
 drag_distance = 2.0
+# The quad's world pose ({"location", "rotation", "size"}), owned by ui_quad.py.
+ui_quad_transform = None
+# Quad pointer state. A button pressed on the quad is held in ui_injected_buttons and routed to
+# ui_pointer_target ((area, region)) at ui_pixel until released, even if the aim has left the quad.
+# ui_aim_pixel is this tick's aim pixel on the quad, or None when the aim misses it.
+ui_injected_buttons = set()
+ui_pointer_target = None
+ui_pixel = None
+ui_aim_pixel = None
 
 debug_state = {
     "action_events": 0,
@@ -145,10 +154,16 @@ def reset_input_state():
     global session_was_running
     global previous_active_object, previous_selected_objects, previous_active_object_loc, previous_active_tool
     global drag_start_aim_loc, drag_start_aim_rot, drag_distance
+    global ui_quad_transform
+    global ui_pointer_target, ui_pixel, ui_aim_pixel
     pointer_target_info = {}
     pointer_buttons.clear()
     pointer_modifiers.clear()
     injected_buttons.clear()
+    ui_injected_buttons.clear()
+    ui_pointer_target = None
+    ui_pixel = None
+    ui_aim_pixel = None
     navigation_mode = None
     navigation_previous_angles = None
     pointer_previous_world_rotation = None
@@ -162,4 +177,5 @@ def reset_input_state():
     drag_start_aim_loc = None
     drag_start_aim_rot = None
     drag_distance = 2.0
+    ui_quad_transform = None
     debug_state["navigation_mode"] = "None"

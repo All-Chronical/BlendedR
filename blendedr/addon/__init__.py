@@ -1,6 +1,6 @@
 """BlendedR XR input-equivalence add-on."""
 
-from . import input_actions, navigation, ui
+from . import input_actions, navigation, ui, ui_quad
 
 bl_info = {
     "name": "BlendedR",
@@ -20,6 +20,7 @@ def register():
 
 
 def unregister():
+    ui_quad.unregister()
     navigation.unregister()
     input_actions.unregister()
     ui.unregister()

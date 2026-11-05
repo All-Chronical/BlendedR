@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-suite = unittest.defaultTestLoader.loadTestsFromName("test_xr_pointer")
+suite = unittest.defaultTestLoader.loadTestsFromNames(["test_xr_pointer", "test_ui_quad"])
 result = unittest.TextTestRunner(verbosity=2).run(suite)
 import os
 

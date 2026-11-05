@@ -5,7 +5,7 @@ from math import asin, atan2, exp, pi, tan
 import bpy
 from mathutils import Matrix, Quaternion, Vector
 
-from . import runtime
+from . import runtime, ui_quad
 
 POINTER_TIMER_INTERVAL = 1.0 / 90.0
 # The pick view Blender builds for button events is centered on the right controller's aim ray,
@@ -21,18 +21,9 @@ ACTION_STATE_THRESHOLD = 0.5
 
 
 def _active_host_view3d():
-    context_area = bpy.context.area
-    if context_area and context_area.type == "VIEW_3D":
-        space = context_area.spaces.active
-        if not space.mirror_xr_session:
-            return bpy.context.window, context_area, space
-
-    active_window = bpy.context.window
-    windows = [active_window] if active_window else []
-    windows.extend(
-        window for window in bpy.context.window_manager.windows if window != active_window
-    )
-    for window in windows:
+    # Not bpy.context.area: in a timer, bpy.context can be the XR session's own context, whose
+    # area is its offscreen View3D. That area is on no screen and its header is never laid out.
+    for window in bpy.context.window_manager.windows:
         for area in window.screen.areas:
             if area.type != "VIEW_3D":
                 continue
@@ -350,6 +341,85 @@ def _release_injected_buttons(session):
     runtime.injected_buttons.clear()
 
 
+UI_BUTTONS = ("LEFTMOUSE", "RIGHTMOUSE")
+
+
+def _ui_pointer_kwargs():
+    """Event kwargs for the quad: the last aim pixel, dispatched to the header it was aimed at."""
+    area, region = runtime.ui_pointer_target
+    x, y = runtime.ui_pixel
+    return {
+        "x": region.x + x,
+        "y": region.y + y,
+        "ctrl": "ctrl" in runtime.pointer_modifiers,
+        "shift": "shift" in runtime.pointer_modifiers,
+        "alt": "alt" in runtime.pointer_modifiers,
+        "area": area,
+        "region": region,
+    }
+
+
+def _release_ui_buttons(session):
+    for button in tuple(runtime.ui_injected_buttons):
+        _inject_mouse_event(session, button, "RELEASE", **_ui_pointer_kwargs())
+    runtime.ui_injected_buttons.clear()
+
+
+def _end_ui_hover(session):
+    """Move the pointer off the header so its hovered button deactivates."""
+    kwargs = _ui_pointer_kwargs()
+    region = runtime.ui_pointer_target[1]
+    kwargs["x"] = region.x - 1
+    kwargs["y"] = region.y - 1
+    _inject_mouse_event(session, "MOUSEMOVE", "NOTHING", **kwargs)
+    runtime.ui_pointer_target = None
+    runtime.ui_pixel = None
+
+
+def _route_ui_pointer(session, hit, desired_buttons):
+    """Send this tick's quad events. `hit` is (area, region, pixel) while the aim is on the quad.
+
+    Lock rule: a press that starts on the quad stays on the quad until its release, even if the
+    aim has moved off it. While a quad press is held, the scene cannot start a press, and the
+    reverse holds too (see _scene_buttons).
+    """
+    runtime.ui_aim_pixel = None if hit is None else hit[2]
+    if hit is not None:
+        area, region, pixel = hit
+        runtime.ui_pointer_target = (area, region)
+        runtime.ui_pixel = pixel
+    elif not runtime.ui_injected_buttons:
+        if runtime.ui_pointer_target is not None:
+            _end_ui_hover(session)
+        return
+
+    kwargs = _ui_pointer_kwargs()
+    if hit is not None:
+        _inject_mouse_event(session, "MOUSEMOVE", "NOTHING", **kwargs)
+    for button in UI_BUTTONS:
+        held = button in runtime.ui_injected_buttons
+        if held and button not in desired_buttons:
+            if _inject_mouse_event(session, button, "RELEASE", **kwargs):
+                runtime.ui_injected_buttons.discard(button)
+        elif (
+            hit is not None
+            and button in desired_buttons
+            and not held
+            and not runtime.injected_buttons
+        ):
+            if _inject_mouse_event(session, button, "PRESS", **kwargs):
+                runtime.ui_injected_buttons.add(button)
+
+
+def _scene_buttons(desired_buttons, hit):
+    """Buttons the scene path may hold this tick, under the lock rule (see _route_ui_pointer)."""
+    if runtime.ui_injected_buttons:
+        return set()
+    if runtime.injected_buttons:
+        return set(desired_buttons) if hit is None else desired_buttons & runtime.injected_buttons
+    return set() if hit is not None else set(desired_buttons)
+
+
 def _inject_mouse_event(session, event_type, event_value, **kwargs):
     """Queue an XR offscreen-viewport mouse event and keep transport observable."""
     if not hasattr(session, "mouse_event_add"):
@@ -406,6 +476,7 @@ def _pointer_timer():
     is_running = session and bpy.types.XrSessionState.is_running(bpy.context)
     if is_running:
         runtime.session_was_running = True
+        ui_quad.ensure_transform(session)
     elif runtime.session_was_running:
         runtime.finish_navigation_log()
         runtime.session_was_running = False
@@ -413,8 +484,11 @@ def _pointer_timer():
     if not preferences.disable_builtin_navigation or not is_running:
         if is_running:
             _release_injected_buttons(session)
+            _release_ui_buttons(session)
         else:
             runtime.injected_buttons.clear()
+            runtime.ui_injected_buttons.clear()
+        runtime.ui_aim_pixel = None
         runtime.navigation_mode = None
         runtime.navigation_previous_angles = None
         runtime.pointer_previous_world_rotation = None
@@ -423,6 +497,7 @@ def _pointer_timer():
 
     if preferences.sync_host_view:
         _sync_host_view_presentation()
+    ui_quad.publish(session)
 
     # The fork's XR draw path renders the right controller aim ray in the headset view.
     settings = bpy.context.window_manager.xr_session_settings
@@ -526,11 +601,17 @@ def _pointer_timer():
         except (RuntimeError, TypeError, ValueError, IndexError):
             pass
 
+    # Quad first. While the aim is on the UI quad, the scene gets no hover and no new press (D5);
+    # a press already held on the scene keeps its scene target until release.
+    hit = ui_quad.aim_hit(curr_aim_loc, curr_aim_rot)
+    _route_ui_pointer(session, hit, desired_buttons)
+    scene_buttons = _scene_buttons(desired_buttons, hit)
+
     pointer_x = POINTER_GRID_CENTER
     pointer_y = POINTER_GRID_CENTER
 
     # If LEFTMOUSE just transitioned to pressed, seed the drag baseline
-    if "LEFTMOUSE" in desired_buttons and "LEFTMOUSE" not in runtime.injected_buttons:
+    if "LEFTMOUSE" in scene_buttons and "LEFTMOUSE" not in runtime.injected_buttons:
         if curr_aim_loc is not None and curr_aim_rot is not None:
             runtime.drag_start_aim_loc = curr_aim_loc.copy()
             runtime.drag_start_aim_rot = curr_aim_rot.copy()
@@ -564,10 +645,12 @@ def _pointer_timer():
         "shift": "shift" in runtime.pointer_modifiers,
         "alt": "alt" in runtime.pointer_modifiers,
     }
-    _inject_mouse_event(session, "MOUSEMOVE", "NOTHING", **pointer_kwargs)
+    scene_hover = (hit is None and not runtime.ui_injected_buttons) or bool(runtime.injected_buttons)
+    if scene_hover:
+        _inject_mouse_event(session, "MOUSEMOVE", "NOTHING", **pointer_kwargs)
 
     for button in ("MIDDLEMOUSE", "LEFTMOUSE", "RIGHTMOUSE"):
-        desired_button = button in desired_buttons
+        desired_button = button in scene_buttons
         injected = button in runtime.injected_buttons
         if desired_button != injected and _inject_mouse_event(
             session,
