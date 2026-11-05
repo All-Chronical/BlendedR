@@ -1,7 +1,8 @@
-"""World-fixed UI quad: placement and laser hit testing for the Viewport3D header in XR.
+"""World-fixed UI quads: placement and laser hit testing for the Viewport3D header in XR.
 
-The XR draw pass shows the header region's own draw buffer, so the add-on only supplies the region
-and where the quad sits. Nothing here renders or copies pixels.
+The XR draw pass shows each region's own draw buffer, so the add-on only supplies the regions and
+where their quads sit. Nothing here renders or copies pixels. The header has a fixed quad, and each
+open menu or popover gets its own, laid out from the region's position in the window.
 """
 
 import bpy
@@ -22,13 +23,9 @@ def _quad_axes(quad_transform):
     )
 
 
-def ray_quad_intersect(ray_origin, ray_dir, quad_transform):
-    """Return the world point where the ray hits the quad, or None.
-
-    Pure function with no session state. Both faces count, and rays starting past the quad
-    or pointing away from it miss.
-    """
-    x_axis, y_axis, normal = _quad_axes(quad_transform)
+def ray_plane_point(ray_origin, ray_dir, quad_transform):
+    """Return the world point where the ray meets the quad's plane, or None if it never does."""
+    _x_axis, _y_axis, normal = _quad_axes(quad_transform)
     center = Vector(quad_transform["location"])
     denominator = normal.dot(ray_dir)
     if abs(denominator) < 1e-9:
@@ -36,8 +33,20 @@ def ray_quad_intersect(ray_origin, ray_dir, quad_transform):
     distance = (center - ray_origin).dot(normal) / denominator
     if distance < 0.0:
         return None
-    hit = ray_origin + distance * ray_dir
-    offset = hit - center
+    return ray_origin + distance * ray_dir
+
+
+def ray_quad_intersect(ray_origin, ray_dir, quad_transform):
+    """Return the world point where the ray hits the quad, or None.
+
+    Pure function with no session state. Both faces count, and rays starting past the quad
+    or pointing away from it miss.
+    """
+    hit = ray_plane_point(ray_origin, ray_dir, quad_transform)
+    if hit is None:
+        return None
+    x_axis, y_axis, _normal = _quad_axes(quad_transform)
+    offset = hit - Vector(quad_transform["location"])
     half_width, half_height = (dimension / 2.0 for dimension in quad_transform["size"])
     if abs(offset.dot(x_axis)) > half_width or abs(offset.dot(y_axis)) > half_height:
         return None
@@ -47,8 +56,7 @@ def ray_quad_intersect(ray_origin, ray_dir, quad_transform):
 def quad_point_to_pixels(hit_point, quad_transform, texture_size):
     """Map a world point on the quad to pixel (x, y) in its texture, origin bottom-left.
 
-    The result is region-local. mouse_event_add takes window coordinates, so add the region's x
-    and y before sending it. Points on or past the edge clamp to the outermost pixel.
+    The result is region-local. Points on or past the edge clamp to the outermost pixel.
     """
     x_axis, y_axis, _normal = _quad_axes(quad_transform)
     offset = Vector(hit_point) - Vector(quad_transform["location"])
@@ -68,10 +76,6 @@ def _header_region(area):
     return None
 
 
-_NO_LOCATION = (0.0, 0.0, 0.0)
-_IDENTITY_ROTATION = (1.0, 0.0, 0.0, 0.0)
-
-
 def header_target():
     """The Host 3D View's header as (area, region), or None when there is no host view."""
     host = navigation._active_host_view3d()
@@ -86,47 +90,112 @@ def header_target():
 
 def _has_quad_api(session):
     # Older Blender builds lack this RNA function; skipping keeps the pointer timer alive.
-    return hasattr(session, "ui_quad_set")
+    return hasattr(session, "ui_quad_add")
+
+
+def _popup_regions():
+    """Menus and popovers open on the host view's screen, parents before their submenus."""
+    host = navigation._active_host_view3d()
+    if host is None:
+        return []
+    return [r for r in host[0].screen.popup_regions if r.width > 0 and r.height > 0]
+
+
+def _popup_transform(header_transform, header, popup, level):
+    """Place a popup where it sits relative to the header in the window, lifted toward the viewer."""
+    x_axis, y_axis, normal = _quad_axes(header_transform)
+    meters_per_pixel = header_transform["size"][0] / header.width
+    dx = (popup.x + popup.width / 2.0) - (header.x + header.width / 2.0)
+    dy = (popup.y + popup.height / 2.0) - (header.y + header.height / 2.0)
+    location = (
+        Vector(header_transform["location"])
+        + meters_per_pixel * (dx * x_axis + dy * y_axis)
+        + level * UI_POPUP_LIFT * normal
+    )
+    return {
+        "location": location,
+        "rotation": header_transform["rotation"],
+        "size": (popup.width * meters_per_pixel, popup.height * meters_per_pixel),
+    }
+
+
+def quads():
+    """Everything to show as (region, transform), back to front: the header, then open popups."""
+    transform = runtime.ui_quad_transform
+    if transform is None:
+        return []
+    target = header_target()
+    if target is None:
+        return []
+    header = target[1]
+    shown = [(header, transform)]
+    for level, popup in enumerate(_popup_regions(), start=1):
+        shown.append((popup, _popup_transform(transform, header, popup, level)))
+    return shown
 
 
 def publish(session):
-    """Per pointer tick: tell the XR draw pass which region to show and where. No placement yet,
-    or no host view, hides the quad."""
+    """Per pointer tick: tell the XR draw pass which regions to show and where."""
     if not _has_quad_api(session):
         return
-    target = header_target()
-    transform = runtime.ui_quad_transform
-    if target is None or transform is None:
-        session.ui_quad_set(bpy.context, None, _NO_LOCATION, _IDENTITY_ROTATION, 0.0, 0.0)
-        return
-    session.ui_quad_set(
-        bpy.context,
-        target[1],
-        transform["location"],
-        transform["rotation"],
-        *transform["size"],
+    session.ui_quads_clear(bpy.context)
+    shown = quads()
+    popup_rects = tuple((r.x, r.y, r.width, r.height) for r, _transform in shown[1:])
+    if popup_rects != runtime.ui_popup_rects:
+        runtime.ui_popup_rects = popup_rects
+        runtime.telemetry("quad_popups", rects=popup_rects)
+    for region, transform in shown:
+        session.ui_quad_add(
+            bpy.context,
+            region,
+            transform["location"],
+            transform["rotation"],
+            *transform["size"],
+        )
+
+
+def _plane_point_to_window(point, transform, region):
+    """Map a point on the quad's plane to window coordinates, without clamping to the quad."""
+    x_axis, y_axis, _normal = _quad_axes(transform)
+    offset = Vector(point) - Vector(transform["location"])
+    width, height = transform["size"]
+    return (
+        region.x + round((offset.dot(x_axis) / width + 0.5) * region.width),
+        region.y + round((offset.dot(y_axis) / height + 0.5) * region.height),
     )
 
 
 def aim_hit(aim_loc, aim_rot):
-    """Where the aim ray lands on the quad: (area, region, pixel), or None when it misses."""
-    transform = runtime.ui_quad_transform
-    if transform is None or aim_loc is None or aim_rot is None:
+    """Where the aim ray lands on the UI: (area, header, window_xy), or None when it misses.
+
+    Events always target the header. Window coordinates are what tell an open popup apart from it.
+    """
+    shown = quads()
+    if not shown or aim_loc is None or aim_rot is None:
         return None
-    hit = ray_quad_intersect(aim_loc, aim_rot @ Vector((0.0, 0.0, -1.0)), transform)
-    if hit is None:
+    area, header = header_target()
+    ray_dir = aim_rot @ Vector((0.0, 0.0, -1.0))
+    for region, transform in reversed(shown):
+        hit = ray_quad_intersect(aim_loc, ray_dir, transform)
+        if hit is not None:
+            x, y = quad_point_to_pixels(hit, transform, (region.width, region.height))
+            return area, header, (region.x + x, region.y + y)
+    if len(shown) == 1:
         return None
-    target = header_target()
-    if target is None:
+    # An open popup is modal, as on desktop: it keeps tracking the pointer past its edge, so its
+    # own safety margin and click-outside handling apply and the scene gets nothing.
+    point = ray_plane_point(aim_loc, ray_dir, shown[0][1])
+    if point is None:
         return None
-    area, region = target
-    return area, region, quad_point_to_pixels(hit, transform, (region.width, region.height))
+    return area, header, _plane_point_to_window(point, shown[0][1], header)
 
 
 # Spawn layout: 2 m wide at 1.5 m is about 67 degrees, which puts a 1492 px header near one texture
 # pixel per headset pixel. Height follows the header's aspect, so its content is never reshaped.
 UI_QUAD_WIDTH = 2.0
 UI_QUAD_DISTANCE = 1.5
+# Each nested popup sits this much closer to the viewer than the one behind it (D1).
+UI_POPUP_LIFT = 0.02
 
 
 def _viewer_pose_ready(session):
@@ -194,4 +263,4 @@ def ensure_transform(session):
 def unregister():
     session = bpy.context.window_manager.xr_session_state
     if session and bpy.types.XrSessionState.is_running(bpy.context) and _has_quad_api(session):
-        session.ui_quad_set(bpy.context, None, _NO_LOCATION, _IDENTITY_ROTATION, 0.0, 0.0)
+        session.ui_quads_clear(bpy.context)

@@ -345,12 +345,12 @@ UI_BUTTONS = ("LEFTMOUSE", "RIGHTMOUSE")
 
 
 def _ui_pointer_kwargs():
-    """Event kwargs for the quad: the last aim pixel, dispatched to the header it was aimed at."""
+    """Event kwargs for the UI quads: the last aim position in the window, sent to the header."""
     area, region = runtime.ui_pointer_target
     x, y = runtime.ui_pixel
     return {
-        "x": region.x + x,
-        "y": region.y + y,
+        "x": x,
+        "y": y,
         "ctrl": "ctrl" in runtime.pointer_modifiers,
         "shift": "shift" in runtime.pointer_modifiers,
         "alt": "alt" in runtime.pointer_modifiers,
@@ -377,7 +377,7 @@ def _end_ui_hover(session):
 
 
 def _route_ui_pointer(session, hit, desired_buttons):
-    """Send this tick's quad events. `hit` is (area, region, pixel) while the aim is on the quad.
+    """Send this tick's quad events. `hit` is (area, region, window_xy) while the aim is on a quad.
 
     Lock rule: a press that starts on the quad stays on the quad until its release, even if the
     aim has moved off it. While a quad press is held, the scene cannot start a press, and the

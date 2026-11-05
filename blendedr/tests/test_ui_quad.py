@@ -111,6 +111,8 @@ class QuadPressLock(unittest.TestCase):
         navigation.bpy = runtime.bpy = pointer_tests.fake_bpy(self.session)
         self.saved_target = ui_quad.header_target
         ui_quad.header_target = lambda: self.HEADER
+        self.saved_popups = ui_quad._popup_regions
+        ui_quad._popup_regions = lambda: []
         runtime.reset_input_state()
         runtime.debug_state["action_set_active"] = True
         runtime.ui_quad_transform = QUAD
@@ -120,6 +122,7 @@ class QuadPressLock(unittest.TestCase):
     def tearDown(self):
         navigation.bpy, runtime.bpy = self.saved
         ui_quad.header_target = self.saved_target
+        ui_quad._popup_regions = self.saved_popups
         runtime.reset_input_state()
 
     def aim_at(self, x):
@@ -191,8 +194,16 @@ class RecordingQuadSession:
         self.viewer_pose_rotation = rotation
         self.quad_calls = []
 
-    def ui_quad_set(self, _context, region, location, rotation, width, height):
+    def ui_quads_clear(self, _context):
+        self.quad_calls.clear()
+
+    def ui_quad_add(self, _context, region, location, rotation, width, height):
         self.quad_calls.append((region, tuple(location), tuple(rotation), width, height))
+
+
+# A menu below the header's middle, in the same window as REGION. REGION's quad is 1 m per 1024 px.
+POPUP = types.SimpleNamespace(x=512, y=186, width=256, height=256)
+SUBMENU = types.SimpleNamespace(x=768, y=186, width=128, height=128)
 
 
 class Publish(unittest.TestCase):
@@ -201,27 +212,120 @@ class Publish(unittest.TestCase):
     def setUp(self):
         self.saved_target = ui_quad.header_target
         ui_quad.header_target = lambda: self.HEADER
+        self.saved_popups = ui_quad._popup_regions
+        self.popups = []
+        ui_quad._popup_regions = lambda: self.popups
+        self.saved_telemetry = runtime.telemetry
+        self.logged = []
+        runtime.telemetry = lambda event, **values: self.logged.append((event, values))
 
     def tearDown(self):
         ui_quad.header_target = self.saved_target
+        ui_quad._popup_regions = self.saved_popups
+        runtime.telemetry = self.saved_telemetry
         runtime.ui_quad_transform = None
+        runtime.ui_popup_rects = ()
+
+    def test_logs_popups_only_when_they_change(self):
+        session = RecordingQuadSession()
+        runtime.ui_quad_transform = QUAD
+        self.popups = [POPUP]
+        ui_quad.publish(session)
+        ui_quad.publish(session)
+        self.popups = []
+        ui_quad.publish(session)
+        self.assertEqual(
+            self.logged,
+            [("quad_popups", {"rects": ((512, 186, 256, 256),)}), ("quad_popups", {"rects": ()})],
+        )
 
     def test_publishes_the_header_region_and_placement(self):
         session = RecordingQuadSession()
         runtime.ui_quad_transform = QUAD
         ui_quad.publish(session)
         self.assertEqual(
-            session.quad_calls[-1],
-            (REGION, (0.0, 0.0, -2.0), (1.0, 0.0, 0.0, 0.0), 1.0, 0.5),
+            session.quad_calls, [(REGION, (0.0, 0.0, -2.0), (1.0, 0.0, 0.0, 0.0), 1.0, 0.5)]
         )
 
-    def test_hides_quad_until_placed(self):
+    def test_publishes_nothing_until_placed(self):
         session = RecordingQuadSession()
+        session.quad_calls.append("stale")
         ui_quad.publish(session)
-        self.assertIsNone(session.quad_calls[-1][0])
+        self.assertEqual(session.quad_calls, [])
+
+    def test_publishes_open_popups_after_the_header(self):
+        session = RecordingQuadSession()
+        runtime.ui_quad_transform = QUAD
+        self.popups = [POPUP, SUBMENU]
+        ui_quad.publish(session)
+        self.assertEqual([c[0] for c in session.quad_calls], [REGION, POPUP, SUBMENU])
 
     def test_older_build_without_quad_api_is_skipped(self):
         ui_quad.publish(pointer_tests.FakeSession())  # must not raise
+
+
+class PopupLayout(unittest.TestCase):
+    def transform(self, popup=POPUP, level=1):
+        return ui_quad._popup_transform(QUAD, REGION, popup, level)
+
+    def test_keeps_the_header_pixel_scale(self):
+        self.assertEqual(self.transform()["size"], (0.25, 0.25))
+
+    def test_sits_where_it_does_relative_to_the_header_in_the_window(self):
+        location = self.transform()["location"]
+        # Popup center (640, 314) against header center (514, 1242), at 1 m per 1024 px.
+        self.assertAlmostEqual(location.x, 126 / 1024, 5)
+        self.assertAlmostEqual(location.y, -928 / 1024, 5)
+
+    def test_each_level_sits_closer_to_the_viewer(self):
+        self.assertAlmostEqual(self.transform()["location"].z, -2.0 + ui_quad.UI_POPUP_LIFT, 5)
+        self.assertGreater(
+            self.transform(level=2)["location"].z, self.transform(level=1)["location"].z
+        )
+
+
+class PopupAim(unittest.TestCase):
+    HEADER = ("HEADER_AREA", REGION)
+
+    def setUp(self):
+        self.saved_target = ui_quad.header_target
+        ui_quad.header_target = lambda: self.HEADER
+        self.saved_popups = ui_quad._popup_regions
+        self.popups = [POPUP]
+        ui_quad._popup_regions = lambda: self.popups
+        runtime.ui_quad_transform = QUAD
+
+    def tearDown(self):
+        ui_quad.header_target = self.saved_target
+        ui_quad._popup_regions = self.saved_popups
+        runtime.ui_quad_transform = None
+
+    def aim(self, x, y, z=-2.0):
+        rotation = FORWARD.rotation_difference(Vector((x, y, z)))
+        return ui_quad.aim_hit(EYE, rotation)
+
+    def popup_center(self):
+        return ui_quad._popup_transform(QUAD, REGION, POPUP, 1)["location"]
+
+    def test_hit_on_a_popup_reports_its_window_position(self):
+        center = self.popup_center()
+        area, region, xy = self.aim(center.x, center.y, center.z)
+        self.assertEqual((area, region), self.HEADER)
+        self.assertEqual(xy, (POPUP.x + 128, POPUP.y + 128))
+
+    def test_header_stays_reachable_behind_an_open_popup(self):
+        self.assertEqual(self.aim(0.0, 0.0)[2], (REGION.x + 512, REGION.y + 256))
+
+    def test_open_popup_keeps_tracking_past_every_quad(self):
+        _area, _region, xy = self.aim(1.0, 0.0)
+        self.assertEqual(xy, (REGION.x + 1536, REGION.y + 256))
+
+    def test_no_popup_means_a_miss_past_the_quad(self):
+        self.popups = []
+        self.assertIsNone(self.aim(1.0, 0.0))
+
+    def test_ray_away_from_the_plane_misses_even_with_a_popup(self):
+        self.assertIsNone(self.aim(0.0, 0.0, 1.0))
 
 
 def fake_view3d(*regions):

@@ -42,11 +42,14 @@ drag_distance = 2.0
 ui_quad_transform = None
 # Quad pointer state. A button pressed on the quad is held in ui_injected_buttons and routed to
 # ui_pointer_target ((area, region)) at ui_pixel until released, even if the aim has left the quad.
-# ui_aim_pixel is this tick's aim pixel on the quad, or None when the aim misses it.
+# ui_pixel and ui_aim_pixel are window coordinates. ui_aim_pixel is this tick's aim position on the
+# UI quads, or None when the aim misses them.
 ui_injected_buttons = set()
 ui_pointer_target = None
 ui_pixel = None
 ui_aim_pixel = None
+# Open popups as (x, y, width, height) window rects, as last published to the XR draw pass.
+ui_popup_rects = ()
 
 debug_state = {
     "action_events": 0,
@@ -155,7 +158,7 @@ def reset_input_state():
     global previous_active_object, previous_selected_objects, previous_active_object_loc, previous_active_tool
     global drag_start_aim_loc, drag_start_aim_rot, drag_distance
     global ui_quad_transform
-    global ui_pointer_target, ui_pixel, ui_aim_pixel
+    global ui_pointer_target, ui_pixel, ui_aim_pixel, ui_popup_rects
     pointer_target_info = {}
     pointer_buttons.clear()
     pointer_modifiers.clear()
@@ -164,6 +167,7 @@ def reset_input_state():
     ui_pointer_target = None
     ui_pixel = None
     ui_aim_pixel = None
+    ui_popup_rects = ()
     navigation_mode = None
     navigation_previous_angles = None
     pointer_previous_world_rotation = None
