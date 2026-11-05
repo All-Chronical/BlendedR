@@ -135,6 +135,19 @@ struct wmXrSessionState {
   double vignette_last_update_time;
 };
 
+/* The header plus nested menus. Deeper nesting than this is not drawn. */
+#define WM_XR_UI_QUADS_MAX 8
+
+struct wmXrUiQuad {
+  /* Not owned. It can be freed between ticks (a popup closing, a workspace change), so
+   * #WM_xr_session_ui_quad_get validates it. */
+  ARegion *region;
+  float location[3];
+  float rotation[4];
+  float width;
+  float height;
+};
+
 struct wmXrRuntimeData {
   /* GHOST XR context. */
   GHOST_IXrContext *ghost_context;
@@ -170,15 +183,9 @@ struct wmXrRuntimeData {
   bool ui_event_queue_check_drag;
   bool ui_event_queue_check_drag_handled;
 
-  /* World-fixed UI quad (desktop editor UI surfaced in XR), set by the add-on via
-   * #WM_xr_session_ui_quad_set and read by the XR surface draw pass via
-   * #WM_xr_session_ui_quad_get. Null means inactive. Not owned, and the region can be freed
-   * between ticks (e.g. a workspace change), so #WM_xr_session_ui_quad_get validates it. */
-  ARegion *ui_quad_region;
-  float ui_quad_location[3];
-  float ui_quad_rotation[4];
-  float ui_quad_width;
-  float ui_quad_height;
+  /* World-fixed UI quads, rebuilt by the add-on every tick. */
+  wmXrUiQuad ui_quads[WM_XR_UI_QUADS_MAX];
+  int ui_quad_count;
 
   short actactionmap;
   short selactionmap;

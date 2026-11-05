@@ -2309,21 +2309,24 @@ bool WM_xr_session_mouse_event_add(wmXrData *xr,
                                    const char **r_error);
 
 /**
- * Set or clear the world-fixed UI quad drawn in the XR surface pass (a desktop editor's UI
- * surfaced in XR). \a region is null to deactivate; otherwise the quad shows that region's own
- * draw buffer, the same pixels the desktop window composites.
+ * The world-fixed UI quads drawn in the XR surface pass (desktop editor UI surfaced in XR). Each
+ * quad shows a region's own draw buffer, the same pixels the desktop window composites. The
+ * add-on rebuilds the list every tick; quads draw in the order added, back to front.
  */
-void WM_xr_session_ui_quad_set(wmXrData *xr,
+void WM_xr_session_ui_quads_clear(wmXrData *xr);
+void WM_xr_session_ui_quad_add(wmXrData *xr,
                                ARegion *region,
                                const float location[3],
                                const float rotation[4],
                                float width,
                                float height);
+int WM_xr_session_ui_quads_len(const wmWindowManager *wm);
 /**
- * \return false (leaving outputs untouched) when the UI quad is inactive, its region no longer
- * exists on a window's active screen, or the region has not been drawn yet.
+ * \return false (leaving outputs untouched) when the quad's region no longer exists on a window's
+ * active screen, or has not been drawn yet.
  */
 bool WM_xr_session_ui_quad_get(const wmWindowManager *wm,
+                               int index,
                                gpu::Texture **r_texture,
                                float r_location[3],
                                float r_rotation[4],

@@ -723,6 +723,12 @@ static void rna_def_screen(BlenderRNA *brna)
   RNA_def_property_struct_type(prop, "Area");
   RNA_def_property_ui_text(prop, "Areas", "Areas the screen is subdivided into");
 
+  prop = RNA_def_property(srna, "popup_regions", PROP_COLLECTION, PROP_NONE);
+  RNA_def_property_collection_sdna(prop, nullptr, "regionbase", nullptr);
+  RNA_def_property_struct_type(prop, "Region");
+  RNA_def_property_ui_text(
+      prop, "Popup Regions", "Temporary regions open on this screen (menus, popovers, tool-tips)");
+
   /* readonly status indicators */
   prop = RNA_def_property(srna, "is_animation_playing", PROP_BOOLEAN, PROP_NONE);
   RNA_def_property_clear_flag(prop, PROP_EDITABLE);

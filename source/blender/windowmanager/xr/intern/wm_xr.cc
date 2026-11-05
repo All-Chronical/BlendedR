@@ -258,7 +258,7 @@ void wm_xr_session_data_cleanup(wmXrData *xr_data)
          sizeof(xr_data->runtime->ui_mouse_button_press_modifier));
 
   /* The runtime data outlives the session (see above), so the quad must be cleared by hand. */
-  xr_data->runtime->ui_quad_region = nullptr;
+  xr_data->runtime->ui_quad_count = 0;
 
   wm_xr_session_data_free(&xr_data->runtime->session_state);
   WM_xr_actionmaps_clear(xr_data->runtime);

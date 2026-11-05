@@ -4352,6 +4352,39 @@ static eHandlerActionFlag wm_event_do_handlers_area_regions(bContext *C,
 #ifdef WITH_XR_OPENXR
 #  include "wm_xr.hh"
 
+/**
+ * Run the window's modal UI handlers only: open menus and active buttons, which must see the XR
+ * pointer the way they see the mouse. Modal operators stay filtered by area in the caller.
+ */
+static eHandlerActionFlag wm_xr_modal_ui_handlers_do(bContext *C,
+                                                     wmWindow *win,
+                                                     const wmEvent *event)
+{
+  ListBaseT<wmEventHandler> *handlers = &win->runtime->modalhandlers;
+  eHandlerActionFlag action = WM_HANDLER_CONTINUE;
+  for (wmEventHandler *handler_base = static_cast<wmEventHandler *>(handlers->first),
+                      *handler_base_next;
+       handler_base && handlers->first;
+       handler_base = handler_base_next)
+  {
+    handler_base_next = handler_base->next;
+    if (handler_base->type == WM_HANDLER_TYPE_UI && (handler_base->flag & WM_HANDLER_DO_FREE) == 0)
+    {
+      action |= wm_handler_ui_call(
+          C, reinterpret_cast<wmEventHandler_UI *>(handler_base), event, false);
+    }
+    /* Closing a menu tags its handlers to be freed. */
+    if (BLI_findindex(handlers, handler_base) != -1 && (handler_base->flag & WM_HANDLER_DO_FREE)) {
+      BLI_remlink(handlers, handler_base);
+      wm_event_free_handler(handler_base);
+    }
+    if (action & WM_HANDLER_BREAK) {
+      break;
+    }
+  }
+  return action;
+}
+
 /** Handle a mouse event queued for the XR-only offscreen viewport. */
 static void wm_event_handle_xr_mouse_event(wmWindowManager *wm,
                                            wmWindow *win,
@@ -4487,8 +4520,13 @@ static void wm_event_handle_xr_mouse_event(wmWindowManager *wm,
   /* The mouse event can continue an XR navigation or transform modal operator. Limit dispatch to operator
    * handlers that originated in the XR offscreen area so desktop modal/UI handlers do not receive
    * XR input. */
-  eHandlerActionFlag action = WM_HANDLER_CONTINUE;
+  eHandlerActionFlag action = has_target_override ?
+                                  wm_xr_modal_ui_handlers_do(xr_context, win, input_event) :
+                                  WM_HANDLER_CONTINUE;
   for (wmEventHandler &handler_base : win->runtime->modalhandlers) {
+    if (action & WM_HANDLER_BREAK) {
+      break;
+    }
     if (handler_base.type != WM_HANDLER_TYPE_OP) {
       continue;
     }

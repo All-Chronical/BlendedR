@@ -1387,6 +1387,42 @@ static void drw_callbacks_post_scene_view3d(DRWContext &draw_ctx)
 }
 
 #ifdef WITH_XR_OPENXR
+static void drw_xr_ui_quad_draw(gpu::Texture *texture,
+                                const float location[3],
+                                const float rotation[4],
+                                const float width,
+                                const float height)
+{
+  float model[4][4];
+  quat_to_mat4(model, rotation);
+  copy_v3_v3(model[3], location);
+
+  GPU_matrix_push();
+  GPU_matrix_mul(model);
+
+  const rctf rect = {-width * 0.5f, width * 0.5f, -height * 0.5f, height * 0.5f};
+  constexpr rctf uv = {0.0f, 1.0f, 0.0f, 1.0f};
+  constexpr float color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+
+  GPUVertFormat *format = immVertexFormat();
+  uint pos = GPU_vertformat_attr_add(format, "pos", gpu::VertAttrType::SFLOAT_32_32);
+  uint texco = GPU_vertformat_attr_add(format, "texCoord", gpu::VertAttrType::SFLOAT_32_32);
+
+  GPU_depth_test(GPU_DEPTH_NONE);
+  GPU_apply_state();
+  GPU_blend(GPU_BLEND_ALPHA_PREMULT);
+  immBindBuiltinProgram(GPU_SHADER_3D_IMAGE_COLOR);
+  immUniformColor4fv(color);
+  const GPUSamplerExtendMode extend = GPU_SAMPLER_EXTEND_MODE_CLAMP_TO_BORDER;
+  immBindTextureSampler("image", texture, {GPU_SAMPLER_FILTERING_LINEAR, extend, extend});
+  immRectf_with_texco(pos, texco, rect, uv);
+  immUnbindProgram();
+  GPU_blend(GPU_BLEND_NONE);
+
+  GPU_matrix_pop();
+  draw::command::StateSet::set();
+}
+
 static void drw_callbacks_post_scene_xr_surface(DRWContext &draw_ctx)
 {
   Depsgraph *depsgraph = draw_ctx.depsgraph;
@@ -1466,57 +1502,17 @@ static void drw_callbacks_post_scene_xr_surface(DRWContext &draw_ctx)
     }
   }
 
-  /* 4. Draw the world-fixed UI quad (a desktop editor's UI surfaced in XR, e.g. the Host 3D
-   * View's header), if the add-on has activated one via #WM_xr_session_ui_quad_set. */
-  {
-    gpu::Texture *ui_quad_texture = nullptr;
-    float ui_quad_location[3];
-    float ui_quad_rotation[4];
-    float ui_quad_width = 0.0f;
-    float ui_quad_height = 0.0f;
-    if (wm && WM_xr_session_ui_quad_get(wm,
-                                        &ui_quad_texture,
-                                        ui_quad_location,
-                                        ui_quad_rotation,
-                                        &ui_quad_width,
-                                        &ui_quad_height))
-    {
-      float ui_quad_model[4][4];
-      quat_to_mat4(ui_quad_model, ui_quad_rotation);
-      copy_v3_v3(ui_quad_model[3], ui_quad_location);
-
-      GPU_matrix_push();
-      GPU_matrix_mul(ui_quad_model);
-
-      const rctf ui_quad_rect = {-ui_quad_width * 0.5f,
-                                 ui_quad_width * 0.5f,
-                                 -ui_quad_height * 0.5f,
-                                 ui_quad_height * 0.5f};
-      constexpr rctf ui_quad_uv = {0.0f, 1.0f, 0.0f, 1.0f};
-      constexpr float ui_quad_color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-
-      GPUVertFormat *ui_quad_format = immVertexFormat();
-      uint ui_quad_pos = GPU_vertformat_attr_add(
-          ui_quad_format, "pos", gpu::VertAttrType::SFLOAT_32_32);
-      uint ui_quad_texco = GPU_vertformat_attr_add(
-          ui_quad_format, "texCoord", gpu::VertAttrType::SFLOAT_32_32);
-
-      GPU_depth_test(GPU_DEPTH_NONE);
-      GPU_apply_state();
-      GPU_blend(GPU_BLEND_ALPHA_PREMULT);
-      immBindBuiltinProgram(GPU_SHADER_3D_IMAGE_COLOR);
-      immUniformColor4fv(ui_quad_color);
-      const GPUSamplerExtendMode ui_quad_extend = GPU_SAMPLER_EXTEND_MODE_CLAMP_TO_BORDER;
-      immBindTextureSampler(
-          "image",
-          ui_quad_texture,
-          {GPU_SAMPLER_FILTERING_LINEAR, ui_quad_extend, ui_quad_extend});
-      immRectf_with_texco(ui_quad_pos, ui_quad_texco, ui_quad_rect, ui_quad_uv);
-      immUnbindProgram();
-      GPU_blend(GPU_BLEND_NONE);
-
-      GPU_matrix_pop();
-      draw::command::StateSet::set();
+  /* 4. Draw the world-fixed UI quads (desktop editor UI surfaced in XR, e.g. the Host 3D View's
+   * header and any menus open from it), if the add-on has added any. */
+  if (wm) {
+    const int ui_quads_len = WM_xr_session_ui_quads_len(wm);
+    for (int i = 0; i < ui_quads_len; i++) {
+      gpu::Texture *texture = nullptr;
+      float location[3], rotation[4];
+      float width = 0.0f, height = 0.0f;
+      if (WM_xr_session_ui_quad_get(wm, i, &texture, location, rotation, &width, &height)) {
+        drw_xr_ui_quad_draw(texture, location, rotation, width, height);
+      }
     }
   }
 

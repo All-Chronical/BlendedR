@@ -950,7 +950,17 @@ static bool rna_XrSessionState_mouse_event_add(ReportList *reports,
 #  endif
 }
 
-static void rna_XrSessionState_ui_quad_set(bContext *C,
+static void rna_XrSessionState_ui_quads_clear(bContext *C)
+{
+#  ifdef WITH_XR_OPENXR
+  wmWindowManager *wm = CTX_wm_manager(C);
+  WM_xr_session_ui_quads_clear(&wm->xr);
+#  else
+  UNUSED_VARS(C);
+#  endif
+}
+
+static void rna_XrSessionState_ui_quad_add(bContext *C,
                                            ARegion *region,
                                            const float location[3],
                                            const float rotation[4],
@@ -959,7 +969,7 @@ static void rna_XrSessionState_ui_quad_set(bContext *C,
 {
 #  ifdef WITH_XR_OPENXR
   wmWindowManager *wm = CTX_wm_manager(C);
-  WM_xr_session_ui_quad_set(&wm->xr, region, location, rotation, width, height);
+  WM_xr_session_ui_quad_add(&wm->xr, region, location, rotation, width, height);
 #  else
   UNUSED_VARS(C, region, location, rotation, width, height);
 #  endif
@@ -2728,17 +2738,22 @@ static void rna_def_xr_session_state(BlenderRNA *brna)
   parm = RNA_def_boolean(func, "result", false, "Result", "Whether the event was queued");
   RNA_def_function_return(func, parm);
 
-  func = RNA_def_function(srna, "ui_quad_set", "rna_XrSessionState_ui_quad_set");
-  RNA_def_function_ui_description(
-      func,
-      "Set or clear the world-fixed UI quad drawn in the XR surface pass. region is None to "
-      "deactivate; otherwise the quad shows that region's own draw buffer");
+  func = RNA_def_function(srna, "ui_quads_clear", "rna_XrSessionState_ui_quads_clear");
+  RNA_def_function_ui_description(func, "Remove all world-fixed UI quads from the XR surface pass");
   RNA_def_function_flag(func, FUNC_NO_SELF);
   parm = RNA_def_pointer(func, "context", "Context", "", "");
   RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
-  parm = RNA_def_pointer(
-      func, "region", "Region", "", "The region to show on the quad, or None to deactivate");
-  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+
+  func = RNA_def_function(srna, "ui_quad_add", "rna_XrSessionState_ui_quad_add");
+  RNA_def_function_ui_description(
+      func,
+      "Add a world-fixed quad to the XR surface pass, showing a region's own draw buffer. Quads "
+      "draw in the order added, back to front");
+  RNA_def_function_flag(func, FUNC_NO_SELF);
+  parm = RNA_def_pointer(func, "context", "Context", "", "");
+  RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
+  parm = RNA_def_pointer(func, "region", "Region", "", "The region to show on the quad");
+  RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
   parm = RNA_def_float_translation(func,
                                    "location",
                                    3,

@@ -587,29 +587,38 @@ bool WM_xr_session_mouse_event_add(wmXrData *xr,
   return true;
 }
 
-void WM_xr_session_ui_quad_set(wmXrData *xr,
+void WM_xr_session_ui_quads_clear(wmXrData *xr)
+{
+  if (xr->runtime != nullptr) {
+    xr->runtime->ui_quad_count = 0;
+  }
+}
+
+void WM_xr_session_ui_quad_add(wmXrData *xr,
                                ARegion *region,
                                const float location[3],
                                const float rotation[4],
                                float width,
                                float height)
 {
-  if (xr->runtime == nullptr) {
+  if (xr->runtime == nullptr || xr->runtime->ui_quad_count == WM_XR_UI_QUADS_MAX) {
     return;
   }
-  xr->runtime->ui_quad_region = region;
-  if (region != nullptr) {
-    copy_v3_v3(xr->runtime->ui_quad_location, location);
-    copy_qt_qt(xr->runtime->ui_quad_rotation, rotation);
-    xr->runtime->ui_quad_width = width;
-    xr->runtime->ui_quad_height = height;
-  }
+  wmXrUiQuad &quad = xr->runtime->ui_quads[xr->runtime->ui_quad_count++];
+  quad.region = region;
+  copy_v3_v3(quad.location, location);
+  copy_qt_qt(quad.rotation, rotation);
+  quad.width = width;
+  quad.height = height;
 }
 
 static bool wm_xr_region_on_active_screen(const wmWindowManager *wm, const ARegion *region)
 {
   for (const wmWindow &win : wm->windows) {
     const bScreen *screen = WM_window_get_active_screen(&win);
+    if (BLI_findindex(&screen->regionbase, region) != -1) {
+      return true;
+    }
     for (const ScrArea &area : screen->areabase) {
       if (BLI_findindex(&area.regionbase, region) != -1) {
         return true;
@@ -619,28 +628,32 @@ static bool wm_xr_region_on_active_screen(const wmWindowManager *wm, const ARegi
   return false;
 }
 
+int WM_xr_session_ui_quads_len(const wmWindowManager *wm)
+{
+  return wm->xr.runtime ? wm->xr.runtime->ui_quad_count : 0;
+}
+
 bool WM_xr_session_ui_quad_get(const wmWindowManager *wm,
+                               const int index,
                                gpu::Texture **r_texture,
                                float r_location[3],
                                float r_rotation[4],
                                float *r_width,
                                float *r_height)
 {
-  const wmXrRuntimeData *runtime = wm->xr.runtime;
-  if (runtime == nullptr || runtime->ui_quad_region == nullptr ||
-      !wm_xr_region_on_active_screen(wm, runtime->ui_quad_region))
-  {
+  const wmXrUiQuad &quad = wm->xr.runtime->ui_quads[index];
+  if (!wm_xr_region_on_active_screen(wm, quad.region)) {
     return false;
   }
-  gpu::Texture *texture = wm_draw_region_texture(runtime->ui_quad_region, 0);
+  gpu::Texture *texture = wm_draw_region_texture(quad.region, 0);
   if (texture == nullptr) {
     return false;
   }
   *r_texture = texture;
-  copy_v3_v3(r_location, runtime->ui_quad_location);
-  copy_qt_qt(r_rotation, runtime->ui_quad_rotation);
-  *r_width = runtime->ui_quad_width;
-  *r_height = runtime->ui_quad_height;
+  copy_v3_v3(r_location, quad.location);
+  copy_qt_qt(r_rotation, quad.rotation);
+  *r_width = quad.width;
+  *r_height = quad.height;
   return true;
 }
 
